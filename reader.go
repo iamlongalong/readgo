@@ -203,20 +203,6 @@ func (r *DefaultReader) ReadFile(ctx context.Context, filePath string) ([]byte, 
 	return content, nil
 }
 
-func findNode(root *FileTreeNode, path string) *FileTreeNode {
-	if root.Path == path {
-		return root
-	}
-	for _, child := range root.Children {
-		if child.Type == "directory" {
-			if node := findNode(child, path); node != nil {
-				return node
-			}
-		}
-	}
-	return nil
-}
-
 func sortTree(node *FileTreeNode) {
 	if node.Children == nil {
 		return
@@ -234,4 +220,52 @@ func sortTree(node *FileTreeNode) {
 			sortTree(child)
 		}
 	}
+}
+
+// GetPackageFiles returns all files in a package
+func (r *DefaultReader) GetPackageFiles(ctx context.Context, pkgPath string, opts TreeOptions) ([]*FileTreeNode, error) {
+	tree, err := r.GetFileTree(ctx, pkgPath, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []*FileTreeNode
+	var collect func(*FileTreeNode)
+	collect = func(node *FileTreeNode) {
+		if node.Type == "file" {
+			files = append(files, node)
+		}
+		for _, child := range node.Children {
+			collect(child)
+		}
+	}
+	collect(tree)
+
+	return files, nil
+}
+
+// SearchFiles searches for files matching the given pattern
+func (r *DefaultReader) SearchFiles(ctx context.Context, pattern string, opts TreeOptions) ([]*FileTreeNode, error) {
+	if pattern == "" {
+		return nil, ErrInvalidInput
+	}
+
+	tree, err := r.GetFileTree(ctx, ".", opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []*FileTreeNode
+	var search func(*FileTreeNode)
+	search = func(node *FileTreeNode) {
+		if node.Type == "file" && strings.Contains(node.Name, pattern) {
+			matches = append(matches, node)
+		}
+		for _, child := range node.Children {
+			search(child)
+		}
+	}
+	search(tree)
+
+	return matches, nil
 }

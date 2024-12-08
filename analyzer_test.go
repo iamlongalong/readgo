@@ -6,21 +6,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-func setupTestModule(t *testing.T, dir string) {
-	goModContent := `module test
-
-go 1.22.0
-`
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModContent), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
-	}
-}
-
+// setupTestFiles creates test files in the given directory
 func setupTestFiles(t *testing.T, dir string) {
 	t.Helper()
 
@@ -132,18 +122,7 @@ func (m *Manager) ProcessAll(ctx context.Context, data []byte) error {
 	}
 
 	// Create go.mod file
-	gomod := `module testmod
-
-go 1.22.0
-
-require (
-	golang.org/x/tools v0.19.0
-)
-`
-	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0644)
-	if err != nil {
-		t.Fatalf("Failed to write go.mod: %v", err)
-	}
+	setupTestModule(t, dir)
 }
 
 func TestAnalyzeProject(t *testing.T) {
@@ -162,7 +141,7 @@ func TestAnalyzeProject(t *testing.T) {
 		},
 		{
 			name:    "Non-existent project",
-			path:    "non-existent",
+			path:    "./nonexistent",
 			wantErr: true,
 		},
 	}
@@ -178,13 +157,12 @@ func TestAnalyzeProject(t *testing.T) {
 				t.Errorf("AnalyzeProject() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if err == nil {
-				if result.Name == "" {
-					t.Error("AnalyzeProject() result name is empty")
-				}
-				if result.Path == "" {
-					t.Error("AnalyzeProject() result path is empty")
-				}
+			if !tt.wantErr {
+				assertNoError(t, err)
+				assertContains(t, result.Name, "testmod")
+				assertDirExists(t, filepath.Join(tmpDir, "testdata"))
+			} else {
+				assertError(t, err)
 			}
 		})
 	}
@@ -195,19 +173,19 @@ func TestAnalyzeFile(t *testing.T) {
 	setupTestFiles(t, tmpDir)
 
 	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
+		name     string
+		filePath string
+		wantErr  bool
 	}{
 		{
-			name:    "Valid file",
-			path:    "testdata/basic/main.go",
-			wantErr: false,
+			name:     "Valid file",
+			filePath: "./testdata/basic/main.go",
+			wantErr:  false,
 		},
 		{
-			name:    "Non-existent file",
-			path:    "non-existent.go",
-			wantErr: true,
+			name:     "Non-existent file",
+			filePath: "./nonexistent.go",
+			wantErr:  true,
 		},
 	}
 
@@ -217,18 +195,27 @@ func TestAnalyzeFile(t *testing.T) {
 				WithWorkDir(tmpDir),
 				WithCacheTTL(time.Minute),
 			)
-			result, err := analyzer.AnalyzeFile(context.Background(), tt.path)
+			result, err := analyzer.AnalyzeFile(context.Background(), tt.filePath)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("AnalyzeFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if err == nil {
-				if result.Name == "" {
-					t.Error("AnalyzeFile() result name is empty")
+			if !tt.wantErr {
+				assertNoError(t, err)
+				assertFileExists(t, filepath.Join(tmpDir, tt.filePath))
+				// Check if we found the User type
+				found := false
+				for _, typ := range result.Types {
+					if typ.Name == "User" {
+						found = true
+						break
+					}
 				}
-				if result.Path == "" {
-					t.Error("AnalyzeFile() result path is empty")
+				if !found {
+					t.Error("Expected to find User type in analysis results")
 				}
+			} else {
+				assertError(t, err)
 			}
 		})
 	}
@@ -269,10 +256,11 @@ func TestFindType(t *testing.T) {
 				t.Errorf("FindType() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if err == nil {
-				if result.Name != tt.typeName {
-					t.Errorf("FindType() got = %v, want %v", result.Name, tt.typeName)
-				}
+			if !tt.wantErr {
+				assertNoError(t, err)
+				assertDeepEqual(t, result.Name, tt.typeName)
+			} else {
+				assertError(t, err)
 			}
 		})
 	}
@@ -313,10 +301,11 @@ func TestFindInterface(t *testing.T) {
 				t.Errorf("FindInterface() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if err == nil {
-				if result.Name != tt.interfaceName {
-					t.Errorf("FindInterface() got = %v, want %v", result.Name, tt.interfaceName)
-				}
+			if !tt.wantErr {
+				assertNoError(t, err)
+				assertDeepEqual(t, result.Name, tt.interfaceName)
+			} else {
+				assertError(t, err)
 			}
 		})
 	}
@@ -334,23 +323,17 @@ func TestCacheEffectiveness(t *testing.T) {
 	// First call should miss cache
 	start := time.Now()
 	result1, err := analyzer.FindType(context.Background(), "./testdata/basic", "User")
-	if err != nil {
-		t.Fatalf("First FindType() failed: %v", err)
-	}
+	assertNoError(t, err)
 	firstDuration := time.Since(start)
 
 	// Second call should hit cache
 	start = time.Now()
 	result2, err := analyzer.FindType(context.Background(), "./testdata/basic", "User")
-	if err != nil {
-		t.Fatalf("Second FindType() failed: %v", err)
-	}
+	assertNoError(t, err)
 	secondDuration := time.Since(start)
 
 	// Verify results are the same
-	if result1.Name != result2.Name || result1.Package != result2.Package {
-		t.Error("Cache returned different results")
-	}
+	assertDeepEqual(t, result1, result2)
 
 	// Second call should be significantly faster
 	if secondDuration > firstDuration/2 {
@@ -367,208 +350,22 @@ func TestCacheEffectiveness(t *testing.T) {
 	}
 }
 
-func BenchmarkTypeAnalysis(b *testing.B) {
-	tests := []struct {
-		name     string
-		pkgPath  string
-		typeName string
-		useCache bool
-	}{
-		{
-			name:     "Find type without cache",
-			pkgPath:  "github.com/iamlongalong/readgo",
-			typeName: "TypeInfo",
-			useCache: false,
-		},
-		{
-			name:     "Find type with cache",
-			pkgPath:  "github.com/iamlongalong/readgo",
-			typeName: "TypeInfo",
-			useCache: true,
-		},
-	}
+// setupTestModule creates a temporary Go module for testing
+func setupTestModule(t *testing.T, dir string) {
+	t.Helper()
+	gomod := `module testmod
 
-	for _, tt := range tests {
-		b.Run(tt.name, func(b *testing.B) {
-			var opts []Option
-			if tt.useCache {
-				opts = append(opts, WithCacheTTL(5*time.Minute))
-			}
-			analyzer := NewAnalyzer(opts...)
+go 1.22.0
 
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, err := analyzer.FindType(context.Background(), tt.pkgPath, tt.typeName)
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
+require (
+	golang.org/x/tools v0.19.0
+)
+`
+	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0644)
+	assertNoError(t, err)
 }
 
-func BenchmarkPackageAnalysis(b *testing.B) {
-	tests := []struct {
-		name     string
-		pkgPath  string
-		useCache bool
-	}{
-		{
-			name:     "Analyze package without cache",
-			pkgPath:  "github.com/iamlongalong/readgo",
-			useCache: false,
-		},
-		{
-			name:     "Analyze package with cache",
-			pkgPath:  "github.com/iamlongalong/readgo",
-			useCache: true,
-		},
-	}
-
-	for _, tt := range tests {
-		b.Run(tt.name, func(b *testing.B) {
-			var opts []Option
-			if tt.useCache {
-				opts = append(opts, WithCacheTTL(5*time.Minute))
-			}
-			analyzer := NewAnalyzer(opts...)
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, err := analyzer.AnalyzePackage(context.Background(), tt.pkgPath)
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-func BenchmarkFileAnalysis(b *testing.B) {
-	tests := []struct {
-		name     string
-		filePath string
-		useCache bool
-	}{
-		{
-			name:     "Analyze file without cache",
-			filePath: "testdata/basic/main.go",
-			useCache: false,
-		},
-		{
-			name:     "Analyze file with cache",
-			filePath: "testdata/basic/main.go",
-			useCache: true,
-		},
-	}
-
-	for _, tt := range tests {
-		b.Run(tt.name, func(b *testing.B) {
-			var opts []Option
-			if tt.useCache {
-				opts = append(opts, WithCacheTTL(5*time.Minute))
-			}
-			analyzer := NewAnalyzer(opts...)
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, err := analyzer.AnalyzeFile(context.Background(), tt.filePath)
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-func BenchmarkConcurrentAnalysis(b *testing.B) {
-	files := []string{
-		"testdata/basic/main.go",
-		"testdata/multi/file1.go",
-		"testdata/multi/file2.go",
-	}
-
-	tests := []struct {
-		name        string
-		concurrent  bool
-		useCache    bool
-		maxRoutines int
-	}{
-		{
-			name:       "Sequential analysis without cache",
-			concurrent: false,
-			useCache:   false,
-		},
-		{
-			name:       "Sequential analysis with cache",
-			concurrent: false,
-			useCache:   true,
-		},
-		{
-			name:        "Concurrent analysis without cache",
-			concurrent:  true,
-			useCache:    false,
-			maxRoutines: 2,
-		},
-		{
-			name:        "Concurrent analysis with cache",
-			concurrent:  true,
-			useCache:    true,
-			maxRoutines: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		b.Run(tt.name, func(b *testing.B) {
-			opts := []Option{
-				WithConcurrentAnalysis(tt.concurrent),
-			}
-			if tt.useCache {
-				opts = append(opts, WithCacheTTL(5*time.Minute))
-			}
-			if tt.maxRoutines > 0 {
-				opts = append(opts, WithMaxConcurrentAnalysis(tt.maxRoutines))
-			}
-			analyzer := NewAnalyzer(opts...)
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				var wg sync.WaitGroup
-				for _, file := range files {
-					if tt.concurrent {
-						wg.Add(1)
-						go func(f string) {
-							defer wg.Done()
-							_, err := analyzer.AnalyzeFile(context.Background(), f)
-							if err != nil {
-								b.Error(err)
-							}
-						}(file)
-					} else {
-						_, err := analyzer.AnalyzeFile(context.Background(), file)
-						if err != nil {
-							b.Fatal(err)
-						}
-					}
-				}
-				if tt.concurrent {
-					wg.Wait()
-				}
-			}
-		})
-	}
-}
-
-// TestMain sets up and tears down the test environment
-func TestMain(m *testing.M) {
-	// Run tests
-	code := m.Run()
-
-	// Clean up
-	os.Exit(code)
-}
-
-// assertNoError fails the test if err is not nil
+// Test helper functions
 func assertNoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -576,7 +373,6 @@ func assertNoError(t *testing.T, err error) {
 	}
 }
 
-// assertError fails the test if err is nil
 func assertError(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -584,7 +380,6 @@ func assertError(t *testing.T, err error) {
 	}
 }
 
-// assertDeepEqual fails the test if a and b are not deeply equal
 func assertDeepEqual(t *testing.T, a, b interface{}) {
 	t.Helper()
 	if !reflect.DeepEqual(a, b) {
@@ -592,7 +387,6 @@ func assertDeepEqual(t *testing.T, a, b interface{}) {
 	}
 }
 
-// assertContains fails the test if str does not contain substr
 func assertContains(t *testing.T, str, substr string) {
 	t.Helper()
 	if !strings.Contains(str, substr) {
@@ -600,15 +394,6 @@ func assertContains(t *testing.T, str, substr string) {
 	}
 }
 
-// assertNotContains fails the test if str contains substr
-func assertNotContains(t *testing.T, str, substr string) {
-	t.Helper()
-	if strings.Contains(str, substr) {
-		t.Errorf("expected %q to not contain %q", str, substr)
-	}
-}
-
-// assertFileExists fails the test if the file does not exist
 func assertFileExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -616,7 +401,6 @@ func assertFileExists(t *testing.T, path string) {
 	}
 }
 
-// assertDirExists fails the test if the directory does not exist
 func assertDirExists(t *testing.T, path string) {
 	t.Helper()
 	info, err := os.Stat(path)
