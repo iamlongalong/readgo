@@ -8,6 +8,7 @@ import (
 )
 
 // setupTestEnvironment creates a temporary test environment
+// DEPRECATED: This function is no longer used and will be removed
 func setupTestEnvironment(t *testing.T) (string, func()) {
 	tmpDir, err := os.MkdirTemp("", "readgo-test")
 	if err != nil {

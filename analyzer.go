@@ -102,24 +102,12 @@ func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error)
 }
 
 // resolvePath resolves a file or directory path against the working directory
-// It returns an absolute path and any error encountered
+// DEPRECATED: This function is no longer used and will be removed
 func (a *DefaultAnalyzer) resolvePath(path string) (string, error) {
-	if path == "" {
-		path = "."
-	}
-
-	// If the path is already absolute, use it as is
 	if filepath.IsAbs(path) {
 		return path, nil
 	}
-
-	// Resolve relative path against workDir
-	absPath, err := filepath.Abs(filepath.Join(a.workDir, path))
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-
-	return absPath, nil
+	return filepath.Join(a.opts.WorkDir, path), nil
 }
 
 // FindType finds a type in the given package
@@ -575,6 +563,7 @@ func (a *DefaultAnalyzer) AnalyzeProject(ctx context.Context, projectPath string
 }
 
 // contains checks if a string slice contains a specific string
+// DEPRECATED: This function is no longer used and will be removed
 func contains(slice []string, str string) bool {
 	for _, s := range slice {
 		if s == str {

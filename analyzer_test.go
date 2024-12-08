@@ -402,13 +402,6 @@ func assertDeepEqual(t *testing.T, a, b interface{}) {
 	}
 }
 
-func assertContains(t *testing.T, str, substr string) {
-	t.Helper()
-	if !strings.Contains(str, substr) {
-		t.Errorf("expected %q to contain %q", str, substr)
-	}
-}
-
 func assertFileExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
