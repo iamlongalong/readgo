@@ -8,147 +8,133 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"unicode/utf8"
 )
 
-// DefaultReader implements the source code reader
+// DefaultReader implements the SourceReader interface
 type DefaultReader struct {
-	baseDir string
+	workDir string
 }
 
-// NewReader creates a new source code reader
-func NewReader(baseDir string) *DefaultReader {
+// NewDefaultReader creates a new DefaultReader instance
+func NewDefaultReader() *DefaultReader {
 	return &DefaultReader{
-		baseDir: baseDir,
+		workDir: ".",
 	}
 }
 
-// GetFileTree gets the file tree starting from the given root
+// WithWorkDir sets the working directory for the reader
+func (r *DefaultReader) WithWorkDir(dir string) *DefaultReader {
+	r.workDir = dir
+	return r
+}
+
+// GetFileTree returns the file tree starting from the given root
 func (r *DefaultReader) GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("nil context")
+	if root == "" {
+		root = "."
 	}
 
-	absRoot := filepath.Join(r.baseDir, root)
-	rootNode := &FileTreeNode{
-		Name:     filepath.Base(absRoot),
-		Path:     root,
-		Type:     "directory",
-		Children: make([]*FileTreeNode, 0),
+	absRoot := filepath.Join(r.workDir, root)
+	absRoot, err := filepath.Abs(absRoot)
+	if err != nil {
+		return nil, err
 	}
 
-	var mu sync.Mutex
-	var errList []error
+	tree := &FileTreeNode{
+		Name: filepath.Base(absRoot),
+		Path: root,
+		Type: "directory",
+	}
 
-	processedFiles := make(map[string]bool)
-	dirNodes := make(map[string]*FileTreeNode)
-	dirNodes[root] = rootNode
-
-	err := filepath.Walk(absRoot, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(absRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if strings.HasPrefix(filepath.Base(path), ".") {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if strings.HasSuffix(path, "~") || strings.HasSuffix(path, ".swp") {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(r.baseDir, path)
-		if err != nil {
-			return err
-		}
-
-		if !info.IsDir() {
-			mu.Lock()
-			if processedFiles[relPath] {
-				mu.Unlock()
+		// Skip if path matches exclude patterns
+		for _, pattern := range opts.ExcludePatterns {
+			if matched, _ := filepath.Match(pattern, info.Name()); matched {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
 				return nil
 			}
-			processedFiles[relPath] = true
-			mu.Unlock()
 		}
 
-		if !info.IsDir() {
-			if opts.FileTypes != FileTypeAll {
-				switch opts.FileTypes {
-				case FileTypeGo:
-					if !strings.HasSuffix(path, ".go") {
-						return nil
-					}
-				case FileTypeTest:
-					if !strings.HasSuffix(path, "_test.go") {
-						return nil
-					}
-				case FileTypeGenerated:
-					if !strings.Contains(path, "generated") && !strings.Contains(path, "gen.go") {
-						return nil
-					}
+		// Skip if path doesn't match include patterns
+		if len(opts.IncludePatterns) > 0 {
+			matched := false
+			for _, pattern := range opts.IncludePatterns {
+				if m, _ := filepath.Match(pattern, info.Name()); m {
+					matched = true
+					break
 				}
 			}
+			if !matched {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
 
-			for _, pattern := range opts.ExcludePatterns {
-				matched, err := filepath.Match(pattern, filepath.Base(path))
+		// Skip if file type doesn't match
+		if !info.IsDir() && opts.FileTypes != FileTypeAll {
+			switch opts.FileTypes {
+			case FileTypeGo:
+				if !strings.HasSuffix(info.Name(), ".go") {
+					return nil
+				}
+			case FileTypeTest:
+				if !strings.HasSuffix(info.Name(), "_test.go") {
+					return nil
+				}
+			case FileTypeGenerated:
+				content, err := os.ReadFile(path)
 				if err != nil {
 					return err
 				}
-				if matched {
+				if !isGeneratedFile(content) {
 					return nil
 				}
 			}
 		}
 
-		node := &FileTreeNode{
-			Name: filepath.Base(path),
-			Path: relPath,
-			Type: "file",
+		// Convert absolute path to relative path
+		relPath, err := filepath.Rel(r.workDir, path)
+		if err != nil {
+			return err
 		}
+
+		node := &FileTreeNode{
+			Name:    info.Name(),
+			Path:    relPath,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+
 		if info.IsDir() {
 			node.Type = "directory"
-			node.Children = make([]*FileTreeNode, 0)
+		} else {
+			node.Type = "file"
 		}
 
-		if relPath == root {
-			return nil
-		}
-
-		parentPath := filepath.Dir(relPath)
-		mu.Lock()
-		if info.IsDir() {
-			dirNodes[relPath] = node
-		}
-
-		parent, ok := dirNodes[parentPath]
-		if !ok {
-			parent = &FileTreeNode{
-				Name:     filepath.Base(parentPath),
-				Path:     parentPath,
-				Type:     "directory",
-				Children: make([]*FileTreeNode, 0),
-			}
-			dirNodes[parentPath] = parent
-
-			grandParentPath := filepath.Dir(parentPath)
-			if grandParent, ok := dirNodes[grandParentPath]; ok {
-				grandParent.Children = append(grandParent.Children, parent)
+		// Find parent node
+		if path != absRoot {
+			parentPath := filepath.Dir(relPath)
+			parent := findParentNode(tree, parentPath)
+			if parent != nil {
+				parent.Children = append(parent.Children, node)
+				sortTree(parent)
+				return nil
 			}
 		}
 
-		parent.Children = append(parent.Children, node)
-		mu.Unlock()
+		// If no parent found (should only happen for root), add to tree
+		if path == absRoot {
+			*tree = *node
+		}
 
 		return nil
 	})
@@ -157,13 +143,7 @@ func (r *DefaultReader) GetFileTree(ctx context.Context, root string, opts TreeO
 		return nil, err
 	}
 
-	if len(errList) > 0 {
-		return nil, fmt.Errorf("multiple errors: %v", errList)
-	}
-
-	sortTree(rootNode)
-
-	return rootNode, nil
+	return tree, nil
 }
 
 // ReadFile reads a source file
@@ -172,7 +152,7 @@ func (r *DefaultReader) ReadFile(ctx context.Context, filePath string) ([]byte, 
 		return nil, fmt.Errorf("nil context")
 	}
 
-	absPath := filepath.Join(r.baseDir, filePath)
+	absPath := filepath.Join(r.workDir, filePath)
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -201,25 +181,6 @@ func (r *DefaultReader) ReadFile(ctx context.Context, filePath string) ([]byte, 
 	}
 
 	return content, nil
-}
-
-func sortTree(node *FileTreeNode) {
-	if node.Children == nil {
-		return
-	}
-
-	sort.Slice(node.Children, func(i, j int) bool {
-		if node.Children[i].Type != node.Children[j].Type {
-			return node.Children[i].Type == "directory"
-		}
-		return node.Children[i].Name < node.Children[j].Name
-	})
-
-	for _, child := range node.Children {
-		if child.Type == "directory" {
-			sortTree(child)
-		}
-	}
 }
 
 // GetPackageFiles returns all files in a package
@@ -268,4 +229,97 @@ func (r *DefaultReader) SearchFiles(ctx context.Context, pattern string, opts Tr
 	search(tree)
 
 	return matches, nil
+}
+
+// ReadSourceFile reads a source file with the specified options
+func (r *DefaultReader) ReadSourceFile(ctx context.Context, path string, opts ReadOptions) ([]byte, error) {
+	if path == "" {
+		return nil, ErrInvalidInput
+	}
+
+	absPath := filepath.Join(r.workDir, path)
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if info.IsDir() {
+		return nil, fmt.Errorf("path is a directory: %s", path)
+	}
+
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.StripSpaces {
+		lines := strings.Split(string(content), "\n")
+		for i, line := range lines {
+			lines[i] = strings.TrimSpace(line)
+		}
+		content = []byte(strings.Join(lines, "\n"))
+	}
+
+	if !opts.IncludeComments {
+		// TODO: Implement comment stripping
+	}
+
+	return content, nil
+}
+
+// isGeneratedFile checks if a file is generated based on its content
+func isGeneratedFile(content []byte) bool {
+	// Common markers for generated files
+	markers := []string{
+		"Code generated",
+		"DO NOT EDIT",
+		"@generated",
+		"Generated by",
+	}
+
+	contentStr := string(content)
+	for _, marker := range markers {
+		if strings.Contains(contentStr, marker) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// findParentNode finds a parent node in the tree by path
+func findParentNode(root *FileTreeNode, parentPath string) *FileTreeNode {
+	if root.Path == parentPath {
+		return root
+	}
+	for _, child := range root.Children {
+		if child.Type == "directory" {
+			if node := findParentNode(child, parentPath); node != nil {
+				return node
+			}
+		}
+	}
+	return nil
+}
+
+// sortTree sorts the children of a node by name
+func sortTree(node *FileTreeNode) {
+	if node == nil || len(node.Children) == 0 {
+		return
+	}
+
+	sort.Slice(node.Children, func(i, j int) bool {
+		// Directories come first
+		if node.Children[i].Type != node.Children[j].Type {
+			return node.Children[i].Type == "directory"
+		}
+		return node.Children[i].Name < node.Children[j].Name
+	})
+
+	// Sort children recursively
+	for _, child := range node.Children {
+		if child.Type == "directory" {
+			sortTree(child)
+		}
+	}
 }

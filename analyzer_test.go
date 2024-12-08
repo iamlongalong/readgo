@@ -136,12 +136,12 @@ func TestAnalyzeProject(t *testing.T) {
 	}{
 		{
 			name:    "Valid project",
-			path:    ".",
+			path:    tmpDir,
 			wantErr: false,
 		},
 		{
 			name:    "Non-existent project",
-			path:    "./nonexistent",
+			path:    filepath.Join(tmpDir, "nonexistent"),
 			wantErr: true,
 		},
 	}
@@ -149,18 +149,20 @@ func TestAnalyzeProject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			analyzer := NewAnalyzer(
-				WithWorkDir(tmpDir),
+				WithWorkDir(tt.path),
 				WithCacheTTL(time.Minute),
 			)
-			result, err := analyzer.AnalyzeProject(context.Background(), tt.path)
+			result, err := analyzer.AnalyzeProject(context.Background(), ".")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("AnalyzeProject() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !tt.wantErr {
 				assertNoError(t, err)
-				assertContains(t, result.Name, "testmod")
-				assertDirExists(t, filepath.Join(tmpDir, "testdata"))
+				if result.Name != "testmod" {
+					t.Errorf("Expected project name to be 'testmod', got %q", result.Name)
+				}
+				assertDirExists(t, filepath.Join(tt.path, "testdata"))
 			} else {
 				assertError(t, err)
 			}
@@ -179,12 +181,12 @@ func TestAnalyzeFile(t *testing.T) {
 	}{
 		{
 			name:     "Valid file",
-			filePath: "./testdata/basic/main.go",
+			filePath: filepath.Join("testdata", "basic", "main.go"),
 			wantErr:  false,
 		},
 		{
 			name:     "Non-existent file",
-			filePath: "./nonexistent.go",
+			filePath: "nonexistent.go",
 			wantErr:  true,
 		},
 	}
@@ -203,16 +205,29 @@ func TestAnalyzeFile(t *testing.T) {
 			if !tt.wantErr {
 				assertNoError(t, err)
 				assertFileExists(t, filepath.Join(tmpDir, tt.filePath))
-				// Check if we found the User type
-				found := false
+
+				// Check if we found the expected types
+				var foundUser, foundInterface bool
 				for _, typ := range result.Types {
-					if typ.Name == "User" {
-						found = true
-						break
+					switch typ.Name {
+					case "User":
+						foundUser = true
+						if typ.Type != "struct{ID int; Name string}" {
+							t.Errorf("User type has wrong structure: %s", typ.Type)
+						}
+					case "ComplexInterface":
+						foundInterface = true
+						if !strings.Contains(typ.Type, "interface") {
+							t.Errorf("ComplexInterface is not an interface type: %s", typ.Type)
+						}
 					}
 				}
-				if !found {
-					t.Error("Expected to find User type in analysis results")
+
+				if !foundUser {
+					t.Error("User type not found in analysis results")
+				}
+				if !foundInterface {
+					t.Error("ComplexInterface not found in analysis results")
 				}
 			} else {
 				assertError(t, err)

@@ -9,36 +9,36 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/tools/go/packages"
 )
 
-// DefaultAnalyzer implements the code analyzer interface
+// DefaultAnalyzer implements the CodeAnalyzer interface
 type DefaultAnalyzer struct {
 	workDir string
 	cache   *Cache
+	reader  SourceReader
 	opts    *AnalyzerOptions
 }
 
-// NewAnalyzer creates a new analyzer instance with the given options
+// NewAnalyzer creates a new DefaultAnalyzer with the given options
 func NewAnalyzer(opts ...Option) *DefaultAnalyzer {
 	options := DefaultOptions()
 	for _, opt := range opts {
 		opt(options)
 	}
 
-	analyzer := &DefaultAnalyzer{
+	reader := NewDefaultReader().WithWorkDir(options.WorkDir)
+
+	return &DefaultAnalyzer{
 		workDir: options.WorkDir,
+		cache:   NewCache(options.CacheTTL),
+		reader:  reader,
 		opts:    options,
 	}
-
-	if options.CacheTTL > 0 {
-		analyzer.cache = NewCache(options.CacheTTL)
-	}
-
-	return analyzer
 }
 
 // loadPackage loads a package with basic configuration
@@ -328,137 +328,98 @@ func (a *DefaultAnalyzer) FindFunction(ctx context.Context, pkgPath, funcName st
 	}, nil
 }
 
-// AnalyzeFile analyzes a Go source file
-// filePath can be:
-// - Absolute path to the file
-// - Path relative to the working directory
-func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (result *AnalysisResult, err error) {
-	if a.cache != nil {
-		info, err := os.Stat(filePath)
-		if err != nil {
-			return nil, &AnalysisError{
-				Op:      "stat file",
-				Path:    filePath,
-				Wrapped: err,
-			}
-		}
-
-		key := FileCacheKey{
-			Path:    filePath,
-			ModTime: info.ModTime(),
-		}
-		if cached, ok := a.cache.GetFile(key); ok {
-			return cached, nil
-		}
-		defer func() {
-			if err == nil && result != nil {
-				a.cache.SetFile(key, result)
-			}
-		}()
-	}
-
+// AnalyzeFile analyzes a specific Go source file
+func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error) {
 	if filePath == "" {
-		return nil, fmt.Errorf("empty file path")
+		return nil, ErrInvalidInput
 	}
 
-	absPath, err := a.resolvePath(filePath)
+	// Read file content
+	content, err := a.reader.ReadSourceFile(ctx, filePath, ReadOptions{
+		IncludeComments: true,
+		StripSpaces:     false,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := os.Stat(absPath); err != nil {
-		return nil, fmt.Errorf("file access error: %w", err)
-	}
-
+	// Parse file
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, absPath, nil, parser.ParseComments)
+	file, err := parser.ParseFile(fset, filePath, content, parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("parse error: %w", err)
+		return nil, &AnalysisError{Op: "parse file", Path: filePath, Wrapped: err}
 	}
 
-	// Get the directory containing the file
-	dir := filepath.Dir(absPath)
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes |
-			packages.NeedSyntax |
-			packages.NeedTypesInfo |
-			packages.NeedImports |
-			packages.NeedDeps,
-		Dir: dir,
-	}
-
-	pkgs, err := packages.Load(cfg, ".")
-	if err != nil {
-		return nil, fmt.Errorf("load package: %w", err)
-	}
-
-	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no package found")
-	}
-
-	pkg := pkgs[0]
-	result = &AnalysisResult{
+	result := &AnalysisResult{
 		Name:       filepath.Base(filePath),
 		Path:       filePath,
 		StartTime:  time.Now().Format(time.RFC3339),
 		AnalyzedAt: time.Now(),
+		Types:      make([]TypeInfo, 0),
+		Functions:  make([]FunctionInfo, 0),
+		Imports:    make([]string, 0),
 	}
 
-	// Collect imports and analyze imported packages
+	// Collect imports
 	for _, imp := range file.Imports {
-		if imp.Path != nil {
-			importPath := strings.Trim(imp.Path.Value, "\"")
-			result.Imports = append(result.Imports, importPath)
+		path := strings.Trim(imp.Path.Value, `"`)
+		result.Imports = append(result.Imports, path)
+	}
 
-			// Try to analyze imported package
-			for _, pkg := range pkg.Imports {
-				if pkg.PkgPath == importPath {
-					scope := pkg.Types.Scope()
-					for _, name := range scope.Names() {
-						obj := scope.Lookup(name)
-						switch obj := obj.(type) {
-						case *types.TypeName:
-							result.Types = append(result.Types, TypeInfo{
-								Name:       obj.Name(),
-								Package:    importPath,
-								Type:       obj.Type().Underlying().String(),
-								IsExported: obj.Exported(),
-							})
-						case *types.Func:
-							result.Functions = append(result.Functions, FunctionInfo{
-								Name:       obj.Name(),
-								Package:    importPath,
-								IsExported: obj.Exported(),
-							})
+	// Analyze declarations
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			if d.Tok == token.TYPE {
+				for _, spec := range d.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						info := TypeInfo{
+							Name:       typeSpec.Name.Name,
+							Package:    file.Name.Name,
+							IsExported: typeSpec.Name.IsExported(),
 						}
+
+						switch t := typeSpec.Type.(type) {
+						case *ast.InterfaceType:
+							methods := make([]string, 0)
+							for _, method := range t.Methods.List {
+								if len(method.Names) > 0 {
+									methodType := types.ExprString(method.Type)
+									for _, name := range method.Names {
+										methods = append(methods, fmt.Sprintf("%s%s", name.Name, methodType))
+									}
+								}
+							}
+							info.Type = fmt.Sprintf("interface{%s}", strings.Join(methods, "; "))
+						case *ast.StructType:
+							fields := make([]string, 0)
+							for _, field := range t.Fields.List {
+								if len(field.Names) > 0 {
+									fieldType := types.ExprString(field.Type)
+									for _, name := range field.Names {
+										fields = append(fields, fmt.Sprintf("%s %s", name.Name, fieldType))
+									}
+								}
+							}
+							info.Type = fmt.Sprintf("struct{%s}", strings.Join(fields, "; "))
+						default:
+							info.Type = fmt.Sprintf("%T", t)
+						}
+
+						result.Types = append(result.Types, info)
 					}
-					break
 				}
 			}
-		}
-	}
-
-	// Analyze AST
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch node := n.(type) {
 		case *ast.FuncDecl:
-			result.Functions = append(result.Functions, FunctionInfo{
-				Name:       node.Name.Name,
-				Package:    pkg.PkgPath,
-				IsExported: node.Name.IsExported(),
-			})
-		case *ast.TypeSpec:
-			if typeInfo, ok := pkg.TypesInfo.Types[node.Type]; ok {
-				result.Types = append(result.Types, TypeInfo{
-					Name:       node.Name.Name,
-					Package:    pkg.PkgPath,
-					Type:       typeInfo.Type.String(),
-					IsExported: node.Name.IsExported(),
+			if d.Name != nil {
+				result.Functions = append(result.Functions, FunctionInfo{
+					Name:       d.Name.Name,
+					Package:    file.Name.Name,
+					IsExported: d.Name.IsExported(),
 				})
 			}
 		}
-		return true
-	})
+	}
 
 	return result, nil
 }
@@ -544,75 +505,73 @@ func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (r
 	return result, nil
 }
 
-// AnalyzeProject analyzes a Go project
-// projectPath can be:
-// - Empty or "." to analyze the working directory
-// - Absolute path to the project
-// - Path relative to the working directory
+// AnalyzeProject analyzes a Go project at the specified path
 func (a *DefaultAnalyzer) AnalyzeProject(ctx context.Context, projectPath string) (*AnalysisResult, error) {
-	absPath, err := a.resolvePath(projectPath)
+	if projectPath == "" {
+		return nil, ErrInvalidInput
+	}
+
+	// Read go.mod to get project name
+	goModPath := filepath.Join(a.workDir, "go.mod")
+	content, err := os.ReadFile(goModPath)
+	if err != nil {
+		return nil, &AnalysisError{Op: "read go.mod", Path: goModPath, Wrapped: err}
+	}
+
+	// Extract module name from go.mod
+	var moduleName string
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "module ") {
+			moduleName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "module "))
+			break
+		}
+	}
+
+	if moduleName == "" {
+		return nil, &AnalysisError{Op: "parse go.mod", Path: goModPath, Wrapped: fmt.Errorf("module name not found")}
+	}
+
+	// Get all Go files in the project
+	files, err := a.reader.GetPackageFiles(ctx, ".", TreeOptions{FileTypes: FileTypeGo})
 	if err != nil {
 		return nil, err
 	}
 
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes |
-			packages.NeedSyntax |
-			packages.NeedTypesInfo |
-			packages.NeedImports |
-			packages.NeedDeps |
-			packages.NeedModule,
-		Dir: absPath,
+	// Analyze each file
+	var types []TypeInfo
+	var functions []FunctionInfo
+	imports := make(map[string]struct{})
+
+	for _, file := range files {
+		result, err := a.AnalyzeFile(ctx, file.Path)
+		if err != nil {
+			return nil, err
+		}
+
+		types = append(types, result.Types...)
+		functions = append(functions, result.Functions...)
+		for _, imp := range result.Imports {
+			imports[imp] = struct{}{}
+		}
 	}
 
-	pkgs, err := packages.Load(cfg, "./...")
-	if err != nil {
-		return nil, fmt.Errorf("load packages: %w", err)
+	// Convert imports map to slice
+	importsList := make([]string, 0, len(imports))
+	for imp := range imports {
+		importsList = append(importsList, imp)
 	}
+	sort.Strings(importsList)
 
-	result := &AnalysisResult{
-		Name:       filepath.Base(absPath),
-		Path:       absPath,
+	return &AnalysisResult{
+		Name:       moduleName,
+		Path:       a.workDir,
 		StartTime:  time.Now().Format(time.RFC3339),
 		AnalyzedAt: time.Now(),
-	}
-
-	for _, pkg := range pkgs {
-		// Skip packages with errors
-		if len(pkg.Errors) > 0 {
-			continue
-		}
-
-		// Add imports
-		for _, imp := range pkg.Imports {
-			if !contains(result.Imports, imp.PkgPath) {
-				result.Imports = append(result.Imports, imp.PkgPath)
-			}
-		}
-
-		// Analyze package scope
-		scope := pkg.Types.Scope()
-		for _, name := range scope.Names() {
-			obj := scope.Lookup(name)
-			switch obj := obj.(type) {
-			case *types.TypeName:
-				result.Types = append(result.Types, TypeInfo{
-					Name:       obj.Name(),
-					Package:    pkg.PkgPath,
-					Type:       obj.Type().Underlying().String(),
-					IsExported: obj.Exported(),
-				})
-			case *types.Func:
-				result.Functions = append(result.Functions, FunctionInfo{
-					Name:       obj.Name(),
-					Package:    pkg.PkgPath,
-					IsExported: obj.Exported(),
-				})
-			}
-		}
-	}
-
-	return result, nil
+		Types:      types,
+		Functions:  functions,
+		Imports:    importsList,
+	}, nil
 }
 
 // contains checks if a string slice contains a specific string
