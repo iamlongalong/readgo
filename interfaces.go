@@ -1,63 +1,51 @@
-package readgo2
+package readgo
 
 import "context"
 
-// Validator 代码验证接口
+// Validator defines the interface for validating Go code
 type Validator interface {
-	// ValidateFile 验证特定文件
-	ValidateFile(ctx context.Context, filePath string, level ValidationLevel) (*ValidationResult, error)
+	// ValidateFile validates a specific Go source file
+	ValidateFile(ctx context.Context, filePath string) (*ValidationResult, error)
 
-	// ValidatePackage 验证特定包
-	ValidatePackage(ctx context.Context, pkgPath string, level ValidationLevel) (*ValidationResult, error)
+	// ValidatePackage validates a Go package
+	ValidatePackage(ctx context.Context, pkgPath string) (*ValidationResult, error)
 
-	// ValidateProject 验证整个项目
-	ValidateProject(ctx context.Context, level ValidationLevel) (*ValidationResult, error)
-
-	// ValidateDependencies 验证依赖关系
-	ValidateDependencies(ctx context.Context, pkgPath string) (*ValidationResult, error)
-
-	// CheckCircularDependencies 检查循环依赖
-	CheckCircularDependencies(ctx context.Context, pkgPath string) (*ValidationResult, error)
+	// ValidateProject validates the entire project
+	ValidateProject(ctx context.Context) (*ValidationResult, error)
 }
 
-// SourceReader 源码读取接口
+// SourceReader defines the interface for reading Go source code
 type SourceReader interface {
-	// GetFileTree 获取文件树
+	// GetFileTree returns the file tree starting from the given root
 	GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error)
 
-	// ReadSourceFile 读取源文件
+	// ReadSourceFile reads a source file with the specified options
 	ReadSourceFile(ctx context.Context, path string, opts ReadOptions) ([]byte, error)
 
-	// GetPackageFiles 获取包中的文件
+	// GetPackageFiles returns all files in a package
 	GetPackageFiles(ctx context.Context, pkgPath string, opts TreeOptions) ([]*FileTreeNode, error)
 
-	// SearchFiles 搜索文件
+	// SearchFiles searches for files matching the given pattern
 	SearchFiles(ctx context.Context, pattern string, opts TreeOptions) ([]*FileTreeNode, error)
 }
 
-// CodeAnalyzer 代码分析器接口
+// CodeAnalyzer defines the interface for analyzing Go code
 type CodeAnalyzer interface {
-	// AnalyzeProject 分析整个项目
-	AnalyzeProject(ctx context.Context) (*AnalysisResult, error)
-
-	// AnalyzePackage 分析特定包
-	AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error)
-
-	// AnalyzeFile 分析特定文件
-	AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error)
-
-	// FindType 查找特定类型
+	// FindType finds a specific type in the given package
 	FindType(ctx context.Context, pkgPath, typeName string) (*TypeInfo, error)
 
-	// FindInterface 查找特定接口
+	// FindInterface finds a specific interface in the given package
 	FindInterface(ctx context.Context, pkgPath, interfaceName string) (*TypeInfo, error)
 
-	// FindFunction 查找特定函数
+	// FindFunction finds a specific function in the given package
 	FindFunction(ctx context.Context, pkgPath, funcName string) (*TypeInfo, error)
 
-	// SummarizeFile 生成文件摘要
-	SummarizeFile(ctx context.Context, filePath string) (*Summary, error)
+	// AnalyzeFile analyzes a specific Go source file
+	AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error)
 
-	// SummarizePackage 生成包摘要
-	SummarizePackage(ctx context.Context, pkgPath string) (*Summary, error)
+	// AnalyzePackage analyzes a Go package
+	AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error)
+
+	// AnalyzeProject analyzes a Go project at the specified path
+	AnalyzeProject(ctx context.Context, projectPath string) (*AnalysisResult, error)
 }
