@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/iamlongalong/readgo"
 )
 
 func main() {
-	// Create a new analyzer
-	analyzer := readgo.NewAnalyzer(".")
+	// Create a new analyzer with options
+	analyzer := readgo.NewAnalyzer(
+		readgo.WithWorkDir("."),
+		readgo.WithCacheTTL(5*time.Minute),
+		readgo.WithConcurrentAnalysis(true),
+	)
 
 	// First analyze the entire project
 	fmt.Println("Analyzing entire project:")
@@ -27,6 +32,14 @@ func main() {
 	fmt.Println("\nAnalyzing implementations:")
 	fmt.Println(strings.Repeat("=", 80))
 	analyzeImplementations(analyzer)
+
+	// Print cache statistics
+	fmt.Println("\nCache Statistics:")
+	fmt.Println(strings.Repeat("=", 80))
+	stats := analyzer.GetCacheStats()
+	for key, value := range stats {
+		fmt.Printf("%s: %v\n", key, value)
+	}
 }
 
 func analyzeProject(analyzer *readgo.DefaultAnalyzer) {

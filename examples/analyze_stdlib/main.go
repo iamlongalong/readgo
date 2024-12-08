@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/iamlongalong/readgo"
 )
 
 func main() {
-	// Create a new analyzer
-	analyzer := readgo.NewAnalyzer(".")
+	// Create a new analyzer with options
+	analyzer := readgo.NewAnalyzer(
+		readgo.WithWorkDir("."),
+		readgo.WithCacheTTL(5*time.Minute),
+		readgo.WithAnalysisTimeout(10*time.Second),
+	)
 
 	// Analyze the io package from standard library
 	result, err := analyzer.AnalyzePackage(context.Background(), "io")
@@ -43,22 +48,11 @@ func main() {
 	fmt.Printf("  Type: %s\n", reader.Type)
 	fmt.Printf("  Exported: %v\n\n", reader.IsExported)
 
-	// Analyze the net/http package
-	result, err = analyzer.AnalyzePackage(context.Background(), "net/http")
-	if err != nil {
-		log.Fatalf("Failed to analyze net/http package: %v", err)
-	}
-
-	// Print structs that implement io.Reader
-	fmt.Println("Types in net/http that implement io.Reader:")
-	for _, t := range result.Types {
-		if t.Type[:6] == "struct" {
-			// Check if the type implements io.Reader
-			// Note: This is a simplified check, in a real application
-			// you would use types.Implements to check this properly
-			if t.Type[:6] == "struct" && (t.Type[:6] == "struct" || t.Type[:9] == "interface") {
-				fmt.Printf("  - %s\n", t.Name)
-			}
-		}
+	// Print cache statistics
+	fmt.Println("Cache Statistics:")
+	fmt.Println("----------------")
+	stats := analyzer.GetCacheStats()
+	for key, value := range stats {
+		fmt.Printf("%s: %v\n", key, value)
 	}
 }

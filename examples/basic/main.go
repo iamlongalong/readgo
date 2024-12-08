@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/iamlongalong/readgo"
 )
 
 func main() {
-	// Create a new analyzer
-	analyzer := readgo.NewAnalyzer(".")
+	// Create a new analyzer with basic options
+	analyzer := readgo.NewAnalyzer(
+		readgo.WithWorkDir("."),
+		readgo.WithCacheTTL(5*time.Minute),
+	)
 
 	// Analyze the current project
 	result, err := analyzer.AnalyzeProject(context.Background(), ".")
@@ -41,5 +45,13 @@ func main() {
 	fmt.Println("Functions:")
 	for _, f := range result.Functions {
 		fmt.Printf("  - %s.%s\n", f.Package, f.Name)
+	}
+
+	// Print cache statistics
+	fmt.Println("\nCache Statistics:")
+	fmt.Println("----------------")
+	stats := analyzer.GetCacheStats()
+	for key, value := range stats {
+		fmt.Printf("%s: %v\n", key, value)
 	}
 }

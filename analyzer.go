@@ -17,25 +17,40 @@ import (
 
 // DefaultAnalyzer implements the code analyzer interface
 type DefaultAnalyzer struct {
-	// workDir is the working directory for the analyzer
-	// It's used as the base directory for resolving relative paths
-	// and as the root directory for project analysis
 	workDir string
+	cache   *Cache
+	opts    *AnalyzerOptions
 }
 
-// NewAnalyzer creates a new analyzer instance
-// workDir specifies the working directory for the analyzer
-// If workDir is empty, the current directory will be used
-func NewAnalyzer(workDir string) *DefaultAnalyzer {
-	if workDir == "" {
-		workDir = "."
+// NewAnalyzer creates a new analyzer instance with the given options
+func NewAnalyzer(opts ...Option) *DefaultAnalyzer {
+	options := DefaultOptions()
+	for _, opt := range opts {
+		opt(options)
 	}
-	return &DefaultAnalyzer{workDir: workDir}
+
+	analyzer := &DefaultAnalyzer{
+		workDir: options.WorkDir,
+		opts:    options,
+	}
+
+	if options.CacheTTL > 0 {
+		analyzer.cache = NewCache(options.CacheTTL)
+	}
+
+	return analyzer
 }
 
 // loadPackage loads a package with basic configuration
 // It supports both local and third-party packages
 func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error) {
+	if pkgPath == "" {
+		return nil, &AnalysisError{
+			Op:      "load package",
+			Wrapped: ErrInvalidInput,
+		}
+	}
+
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes |
 			packages.NeedSyntax |
@@ -46,30 +61,41 @@ func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error)
 		Dir: a.workDir,
 	}
 
-	// Handle different types of package paths:
-	// 1. Empty or "." -> analyze current directory
-	// 2. Relative path -> resolve against workDir
-	// 3. Absolute path -> use as is
-	// 4. Import path (e.g. "github.com/user/repo") -> use as is
-	if pkgPath == "" || pkgPath == "." {
+	// Handle different types of package paths
+	if pkgPath == "." {
 		pkgPath = "./..."
 	} else if !filepath.IsAbs(pkgPath) && !strings.Contains(pkgPath, "/") {
-		// For local packages without path separator
 		pkgPath = "./" + pkgPath
 	}
 
 	pkgs, err := packages.Load(cfg, pkgPath)
 	if err != nil {
-		return nil, fmt.Errorf("load package: %w", err)
+		return nil, &PackageError{
+			Package: pkgPath,
+			Op:      "load",
+			Wrapped: err,
+		}
 	}
 
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no package found at %s", pkgPath)
+		return nil, &PackageError{
+			Package: pkgPath,
+			Op:      "load",
+			Wrapped: ErrNotFound,
+		}
 	}
 
 	// Check for package errors
 	if len(pkgs[0].Errors) > 0 {
-		return nil, fmt.Errorf("package has errors: %v", pkgs[0].Errors[0])
+		errors := make([]string, len(pkgs[0].Errors))
+		for i, err := range pkgs[0].Errors {
+			errors[i] = err.Error()
+		}
+		return nil, &PackageError{
+			Package: pkgPath,
+			Op:      "load",
+			Errors:  errors,
+		}
 	}
 
 	return pkgs[0], nil
@@ -97,11 +123,36 @@ func (a *DefaultAnalyzer) resolvePath(path string) (string, error) {
 }
 
 // FindType finds a type in the given package
-// It supports both local and third-party packages
-func (a *DefaultAnalyzer) FindType(ctx context.Context, pkgPath, typeName string) (*TypeInfo, error) {
+func (a *DefaultAnalyzer) FindType(ctx context.Context, pkgPath, typeName string) (result *TypeInfo, err error) {
+	if a.cache != nil {
+		key := TypeCacheKey{
+			Package:  pkgPath,
+			TypeName: typeName,
+		}
+		if cached, ok := a.cache.GetType(key); ok {
+			return cached, nil
+		}
+		defer func() {
+			if err == nil && result != nil {
+				a.cache.SetType(key, result)
+			}
+		}()
+	}
+
+	if typeName == "" {
+		return nil, &TypeLookupError{
+			Package: pkgPath,
+			Wrapped: ErrInvalidInput,
+		}
+	}
+
 	pkg, err := a.loadPackage(pkgPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load package %s: %w", pkgPath, err)
+		return nil, &TypeLookupError{
+			TypeName: typeName,
+			Package:  pkgPath,
+			Wrapped:  err,
+		}
 	}
 
 	// First try to find in the package's scope
@@ -109,14 +160,19 @@ func (a *DefaultAnalyzer) FindType(ctx context.Context, pkgPath, typeName string
 	if obj != nil {
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			return nil, fmt.Errorf("symbol %q in package %s is not a type", typeName, pkgPath)
+			return nil, &TypeLookupError{
+				TypeName: typeName,
+				Package:  pkgPath,
+				Wrapped:  fmt.Errorf("symbol is not a type"),
+			}
 		}
-		return &TypeInfo{
+		result = &TypeInfo{
 			Name:       typeObj.Name(),
 			Package:    pkgPath,
 			IsExported: typeObj.Exported(),
 			Type:       typeObj.Type().Underlying().String(),
-		}, nil
+		}
+		return result, nil
 	}
 
 	// If not found, try to find in imported packages
@@ -126,24 +182,57 @@ func (a *DefaultAnalyzer) FindType(ctx context.Context, pkgPath, typeName string
 			if !ok {
 				continue
 			}
-			return &TypeInfo{
+			result = &TypeInfo{
 				Name:       typeObj.Name(),
 				Package:    importPath,
 				IsExported: typeObj.Exported(),
 				Type:       typeObj.Type().Underlying().String(),
-			}, nil
+			}
+			return result, nil
 		}
 	}
 
-	return nil, fmt.Errorf("type %q not found in package %s or its imports", typeName, pkgPath)
+	return nil, &TypeLookupError{
+		TypeName: typeName,
+		Package:  pkgPath,
+		Wrapped:  ErrNotFound,
+	}
 }
 
 // FindInterface finds an interface in the given package
-// It supports both local and third-party packages
-func (a *DefaultAnalyzer) FindInterface(ctx context.Context, pkgPath, interfaceName string) (*TypeInfo, error) {
+func (a *DefaultAnalyzer) FindInterface(ctx context.Context, pkgPath, interfaceName string) (result *TypeInfo, err error) {
+	if a.cache != nil {
+		key := TypeCacheKey{
+			Package:  pkgPath,
+			TypeName: interfaceName,
+			Kind:     "interface",
+		}
+		if cached, ok := a.cache.GetType(key); ok {
+			return cached, nil
+		}
+		defer func() {
+			if err == nil && result != nil {
+				a.cache.SetType(key, result)
+			}
+		}()
+	}
+
+	if interfaceName == "" {
+		return nil, &TypeLookupError{
+			Package: pkgPath,
+			Kind:    "interface",
+			Wrapped: ErrInvalidInput,
+		}
+	}
+
 	pkg, err := a.loadPackage(pkgPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load package %s: %w", pkgPath, err)
+		return nil, &TypeLookupError{
+			TypeName: interfaceName,
+			Package:  pkgPath,
+			Kind:     "interface",
+			Wrapped:  err,
+		}
 	}
 
 	// First try to find in the package's scope
@@ -151,17 +240,28 @@ func (a *DefaultAnalyzer) FindInterface(ctx context.Context, pkgPath, interfaceN
 	if obj != nil {
 		typeObj, ok := obj.(*types.TypeName)
 		if !ok {
-			return nil, fmt.Errorf("symbol %q in package %s is not a type", interfaceName, pkgPath)
+			return nil, &TypeLookupError{
+				TypeName: interfaceName,
+				Package:  pkgPath,
+				Kind:     "interface",
+				Wrapped:  fmt.Errorf("symbol is not a type"),
+			}
 		}
 		if _, ok := typeObj.Type().Underlying().(*types.Interface); !ok {
-			return nil, fmt.Errorf("type %q in package %s is not an interface", interfaceName, pkgPath)
+			return nil, &TypeLookupError{
+				TypeName: interfaceName,
+				Package:  pkgPath,
+				Kind:     "interface",
+				Wrapped:  fmt.Errorf("type is not an interface"),
+			}
 		}
-		return &TypeInfo{
+		result = &TypeInfo{
 			Name:       typeObj.Name(),
 			Package:    pkgPath,
 			IsExported: typeObj.Exported(),
 			Type:       typeObj.Type().Underlying().String(),
-		}, nil
+		}
+		return result, nil
 	}
 
 	// If not found, try to find in imported packages
@@ -174,16 +274,22 @@ func (a *DefaultAnalyzer) FindInterface(ctx context.Context, pkgPath, interfaceN
 			if _, ok := typeObj.Type().Underlying().(*types.Interface); !ok {
 				continue
 			}
-			return &TypeInfo{
+			result = &TypeInfo{
 				Name:       typeObj.Name(),
 				Package:    importPath,
 				IsExported: typeObj.Exported(),
 				Type:       typeObj.Type().Underlying().String(),
-			}, nil
+			}
+			return result, nil
 		}
 	}
 
-	return nil, fmt.Errorf("interface %q not found in package %s or its imports", interfaceName, pkgPath)
+	return nil, &TypeLookupError{
+		TypeName: interfaceName,
+		Package:  pkgPath,
+		Kind:     "interface",
+		Wrapped:  ErrNotFound,
+	}
 }
 
 // FindFunction finds a function in the given package
@@ -226,7 +332,31 @@ func (a *DefaultAnalyzer) FindFunction(ctx context.Context, pkgPath, funcName st
 // filePath can be:
 // - Absolute path to the file
 // - Path relative to the working directory
-func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error) {
+func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (result *AnalysisResult, err error) {
+	if a.cache != nil {
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return nil, &AnalysisError{
+				Op:      "stat file",
+				Path:    filePath,
+				Wrapped: err,
+			}
+		}
+
+		key := FileCacheKey{
+			Path:    filePath,
+			ModTime: info.ModTime(),
+		}
+		if cached, ok := a.cache.GetFile(key); ok {
+			return cached, nil
+		}
+		defer func() {
+			if err == nil && result != nil {
+				a.cache.SetFile(key, result)
+			}
+		}()
+	}
+
 	if filePath == "" {
 		return nil, fmt.Errorf("empty file path")
 	}
@@ -267,7 +397,7 @@ func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*An
 	}
 
 	pkg := pkgs[0]
-	result := &AnalysisResult{
+	result = &AnalysisResult{
 		Name:       filepath.Base(filePath),
 		Path:       filePath,
 		StartTime:  time.Now().Format(time.RFC3339),
@@ -335,13 +465,28 @@ func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*An
 
 // AnalyzePackage analyzes a Go package
 // It supports analyzing both local and third-party packages
-func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error) {
+func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (result *AnalysisResult, err error) {
+	if a.cache != nil {
+		key := PackageCacheKey{
+			Path: pkgPath,
+			Mode: "full",
+		}
+		if cached, ok := a.cache.GetPackage(key); ok {
+			return cached, nil
+		}
+		defer func() {
+			if err == nil && result != nil {
+				a.cache.SetPackage(key, result)
+			}
+		}()
+	}
+
 	pkg, err := a.loadPackage(pkgPath)
 	if err != nil {
 		return nil, err
 	}
 
-	result := &AnalysisResult{
+	result = &AnalysisResult{
 		Name:       pkg.Name,
 		Path:       pkgPath,
 		StartTime:  time.Now().Format(time.RFC3339),
@@ -478,4 +623,16 @@ func contains(slice []string, str string) bool {
 		}
 	}
 	return false
+}
+
+// GetCacheStats returns cache statistics if caching is enabled
+func (a *DefaultAnalyzer) GetCacheStats() map[string]interface{} {
+	if a.cache == nil {
+		return map[string]interface{}{
+			"enabled": false,
+		}
+	}
+	stats := a.cache.Stats()
+	stats["enabled"] = true
+	return stats
 }
