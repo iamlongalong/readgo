@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 jobs:
-  goreleaser:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,17 +19,20 @@ jobs:
         with:
           go-version: '1.22.x'
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docs:
-    needs: goreleaser
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
