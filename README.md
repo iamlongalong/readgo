@@ -1,353 +1,151 @@
-# readgo
+# ReadGo
 
-A powerful Go code analysis and validation library that helps you understand and validate Go code.
+[English](README.md) | [中文](README_zh.md)
+
+ReadGo is a Go code analysis tool that helps developers understand and navigate Go codebases. It provides functionality for analyzing Go source code, including type information, function signatures, and package dependencies.
 
 ## Features
 
-- Analyze Go source code structure (packages, types, functions)
-- Support for analyzing third-party packages
-- Code validation with detailed error reporting
-- File tree traversal and search
-- Rich API for code introspection
-- Comprehensive error handling and validation
-- Support for custom analysis options
+- Project-wide code analysis
+- Type information extraction
+- Function signature analysis
+- Package dependency tracking
+- Interface implementation detection
+- Code structure visualization
+- Cache support for better performance
 
 ## Installation
 
+### Prerequisites
+
+- Go 1.16 or later
+- Make (optional, for using Makefile commands)
+- golangci-lint (for code linting)
+
+### Installing the Tool
+
+1. Clone the repository:
 ```bash
-go get github.com/iamlongalong/readgo
+git clone https://github.com/iamlongalong/readgo.git
+cd readgo
 ```
 
-## Quick Start
+2. Install development tools:
+```bash
+make install-tools
+```
 
-Here's a simple example of analyzing a Go project:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/iamlongalong/readgo"
-)
-
-func main() {
-    // Create a new analyzer
-    analyzer := readgo.NewAnalyzer(".")
-
-    // Analyze the current project
-    result, err := analyzer.AnalyzeProject(context.Background(), ".")
-    if err != nil {
-        log.Fatalf("Failed to analyze project: %v", err)
-    }
-
-    // Print project information
-    fmt.Printf("Project: %s\n", result.Name)
-    fmt.Printf("Path: %s\n", result.Path)
-    fmt.Printf("Analyzed at: %s\n", result.AnalyzedAt)
-
-    // Print types
-    fmt.Println("\nTypes:")
-    for _, t := range result.Types {
-        fmt.Printf("  - %s.%s: %s\n", t.Package, t.Name, t.Type)
-    }
-
-    // Print functions
-    fmt.Println("\nFunctions:")
-    for _, f := range result.Functions {
-        fmt.Printf("  - %s.%s\n", f.Package, f.Name)
-    }
-
-    // Print imports
-    fmt.Println("\nImports:")
-    for _, imp := range result.Imports {
-        fmt.Printf("  - %s\n", imp)
-    }
-}
+3. Build the project:
+```bash
+make build
 ```
 
 ## Usage
 
-### Analyzing Code
+### Basic Commands
 
-The library provides several ways to analyze Go code:
-
-1. Analyze a single file:
 ```go
-result, err := analyzer.AnalyzeFile(ctx, "main.go")
-if err != nil {
-    log.Fatalf("Failed to analyze file: %v", err)
-}
-```
+// Initialize an analyzer
+analyzer := readgo.NewAnalyzer()
 
-2. Analyze a package:
-```go
-result, err := analyzer.AnalyzePackage(ctx, "mypackage")
-if err != nil {
-    log.Fatalf("Failed to analyze package: %v", err)
-}
-```
+// Analyze a file
+result, err := analyzer.AnalyzeFile(context.Background(), "main.go")
 
-3. Analyze an entire project:
-```go
-result, err := analyzer.AnalyzeProject(ctx, ".")
-if err != nil {
-    log.Fatalf("Failed to analyze project: %v", err)
-}
-```
+// Analyze a package
+result, err := analyzer.AnalyzePackage(context.Background(), "mypackage")
 
-4. Find specific types or interfaces:
-```go
-// Find a type
-typeInfo, err := analyzer.FindType(ctx, "mypackage", "MyType")
-if err != nil {
-    log.Fatalf("Failed to find type: %v", err)
-}
+// Analyze an entire project
+result, err := analyzer.AnalyzeProject(context.Background(), ".")
+
+// Find a specific type
+typeInfo, err := analyzer.FindType(context.Background(), "mypackage", "MyType")
 
 // Find an interface
-interfaceInfo, err := analyzer.FindInterface(ctx, "io", "Reader")
-if err != nil {
-    log.Fatalf("Failed to find interface: %v", err)
-}
+interfaceInfo, err := analyzer.FindInterface(context.Background(), "mypackage", "MyInterface")
 ```
 
-### Reading Source Code
+### Development Commands
 
-The library provides a powerful source code reader:
+The project includes a Makefile with common development commands:
 
-1. Get file tree:
-```go
-opts := readgo.TreeOptions{
-    FileTypes: readgo.FileTypeGo,
-    ExcludePatterns: []string{"vendor/*", "*.test.go"},
-}
-tree, err := reader.GetFileTree(ctx, ".", opts)
+```bash
+# Show all available commands
+make help
+
+# Build the project
+make build
+
+# Run tests
+make test
+
+# Run code checks (format, vet, lint, test)
+make check
+
+# Run pre-commit checks
+make pre-commit
+
+# Format code
+make fmt
+
+# Clean build artifacts
+make clean
 ```
 
-2. Read source file:
-```go
-opts := readgo.ReadOptions{
-    IncludeComments: true,
-    StripSpaces: false,
-}
-content, err := reader.ReadSourceFile(ctx, "main.go", opts)
-```
+## Configuration
 
-3. Get package files:
-```go
-files, err := reader.GetPackageFiles(ctx, "mypackage", opts)
-```
-
-4. Search files:
-```go
-files, err := reader.SearchFiles(ctx, "*.go", opts)
-```
-
-### Validating Code
-
-The library provides code validation capabilities:
-
-1. Validate a single file:
-```go
-result, err := validator.ValidateFile(ctx, "main.go")
-if err != nil {
-    log.Fatalf("Failed to validate file: %v", err)
-}
-// Check validation results
-if len(result.Errors) > 0 {
-    fmt.Println("Validation errors:")
-    for _, err := range result.Errors {
-        fmt.Printf("  - %s\n", err)
-    }
-}
-```
-
-2. Validate a package:
-```go
-result, err := validator.ValidatePackage(ctx, "mypackage")
-```
-
-3. Validate an entire project:
-```go
-result, err := validator.ValidateProject(ctx)
-```
-
-### Working with Third-Party Packages
-
-The library supports analyzing third-party packages:
+### Analyzer Options
 
 ```go
-// Analyze a standard library package
-result, err := analyzer.AnalyzePackage(ctx, "net/http")
-
-// Find an interface in a third-party package
-interfaceInfo, err := analyzer.FindInterface(ctx, "github.com/pkg/errors", "Wrapper")
-```
-
-## Examples
-
-Check out the `examples` directory for more detailed examples:
-
-- `examples/basic`: Basic usage of the analyzer
-- `examples/analyze_stdlib`: Analyzing standard library packages
-- `examples/validator`: Using the code validator
-
-## API Documentation
-
-### Core Interfaces
-
-#### CodeAnalyzer Interface
-
-The main interface for code analysis:
-
-```go
-type CodeAnalyzer interface {
-    FindType(ctx context.Context, pkgPath, typeName string) (*TypeInfo, error)
-    FindInterface(ctx context.Context, pkgPath, interfaceName string) (*TypeInfo, error)
-    FindFunction(ctx context.Context, pkgPath, funcName string) (*TypeInfo, error)
-    AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error)
-    AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error)
-    AnalyzeProject(ctx context.Context, projectPath string) (*AnalysisResult, error)
-}
-```
-
-#### SourceReader Interface
-
-Interface for reading and traversing source code:
-
-```go
-type SourceReader interface {
-    GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error)
-    ReadSourceFile(ctx context.Context, path string, opts ReadOptions) ([]byte, error)
-    GetPackageFiles(ctx context.Context, pkgPath string, opts TreeOptions) ([]*FileTreeNode, error)
-    SearchFiles(ctx context.Context, pattern string, opts TreeOptions) ([]*FileTreeNode, error)
-}
-```
-
-#### Validator Interface
-
-Interface for code validation:
-
-```go
-type Validator interface {
-    ValidateFile(ctx context.Context, filePath string) (*ValidationResult, error)
-    ValidatePackage(ctx context.Context, pkgPath string) (*ValidationResult, error)
-    ValidateProject(ctx context.Context) (*ValidationResult, error)
-}
-```
-
-### Data Types
-
-#### Analysis Types
-
-```go
-// TypeInfo represents information about a Go type
-type TypeInfo struct {
-    Name       string `json:"name"`
-    Package    string `json:"package"`
-    Type       string `json:"type"`
-    IsExported bool   `json:"is_exported"`
-}
-
-// FunctionInfo represents information about a Go function
-type FunctionInfo struct {
-    Name       string `json:"name"`
-    Package    string `json:"package"`
-    IsExported bool   `json:"is_exported"`
-}
-
-// AnalysisResult represents the result of code analysis
-type AnalysisResult struct {
-    Name       string         `json:"name"`
-    Path       string         `json:"path"`
-    StartTime  string         `json:"start_time"`
-    AnalyzedAt time.Time      `json:"analyzed_at"`
-    Types      []TypeInfo     `json:"types,omitempty"`
-    Functions  []FunctionInfo `json:"functions,omitempty"`
-    Imports    []string       `json:"imports,omitempty"`
-}
-```
-
-#### Validation Types
-
-```go
-// ValidationWarning represents a warning during validation
-type ValidationWarning struct {
-    Type    string `json:"type"`
-    Message string `json:"message"`
-    File    string `json:"file,omitempty"`
-    Line    int    `json:"line,omitempty"`
-    Column  int    `json:"column,omitempty"`
-}
-
-// ValidationResult represents the result of code validation
-type ValidationResult struct {
-    Name       string              `json:"name"`
-    Path       string              `json:"path"`
-    StartTime  string              `json:"start_time"`
-    AnalyzedAt time.Time           `json:"analyzed_at"`
-    Errors     []string            `json:"errors,omitempty"`
-    Warnings   []ValidationWarning `json:"warnings,omitempty"`
-}
-```
-
-#### Configuration Types
-
-```go
-// FileType represents the type of files to include in the analysis
-type FileType string
-
-const (
-    FileTypeAll       FileType = "all"
-    FileTypeGo       FileType = "go"
-    FileTypeTest     FileType = "test"
-    FileTypeGenerated FileType = "generated"
+analyzer := readgo.NewAnalyzer(
+    readgo.WithWorkDir("path/to/workspace"),
+    readgo.WithCacheTTL(time.Minute * 5),
 )
-
-// TreeOptions represents options for file tree operations
-type TreeOptions struct {
-    FileTypes       FileType `json:"file_types"`
-    ExcludePatterns []string `json:"exclude_patterns,omitempty"`
-    IncludePatterns []string `json:"include_patterns,omitempty"`
-}
-
-// ReadOptions represents options for reading source files
-type ReadOptions struct {
-    IncludeComments bool `json:"include_comments"`
-    StripSpaces     bool `json:"strip_spaces"`
-}
 ```
 
-## Error Handling
+### Cache Configuration
 
-The library uses standard Go error handling patterns. All errors are wrapped with meaningful context using `fmt.Errorf` and the `%w` verb. This allows you to use `errors.Is` and `errors.As` for error checking:
+The analyzer includes a caching system to improve performance:
 
-```go
-result, err := analyzer.AnalyzeFile(ctx, "main.go")
-if err != nil {
-    if os.IsNotExist(err) {
-        log.Fatal("File does not exist")
-    }
-    if errors.Is(err, ErrInvalidSyntax) {
-        log.Fatal("Invalid Go syntax")
-    }
-    log.Fatalf("Unknown error: %v", err)
-}
+- Default TTL: 5 minutes
+- Cache can be disabled by setting TTL to 0
+- Cache statistics available via `GetCacheStats()`
+
+## Project Structure
+
+```
+.
+├── analyzer.go       # Main analyzer implementation
+├── cache.go         # Caching system
+├── common.go        # Common utilities
+├── errors.go        # Error definitions
+├── options.go       # Configuration options
+├── reader.go        # Source code reader
+├── types.go         # Type definitions
+└── validator.go     # Code validation
 ```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Run tests and checks (`make pre-commit`)
+4. Commit your changes (`git commit -m 'Add amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
 
-Before submitting a pull request:
-1. Make sure all tests pass: `go test ./...`
-2. Run `go vet` and `golint`
-3. Format your code: `go fmt ./...`
-4. Add tests for new functionality
-5. Update documentation as needed
+## Development Workflow
+
+1. Make your changes
+2. Run `make fmt` to format code
+3. Run `make check` to verify changes
+4. Run `make pre-commit` before committing
+5. Create pull request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- The Go team for the excellent `go/ast` and `go/types` packages
+- The community for feedback and contributions
