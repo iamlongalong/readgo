@@ -51,6 +51,92 @@ func TestAnalyzeProject(t *testing.T) {
 	}
 }
 
+func TestAnalyzeProjectWithDirectories(t *testing.T) {
+	// 创建临时测试目录结构
+	tmpDir := t.TempDir()
+
+	// 创建嵌套的目录结构
+	dirs := []string{
+		filepath.Join(tmpDir, "src"),
+		filepath.Join(tmpDir, "src", "models"),
+		filepath.Join(tmpDir, "src", "handlers"),
+	}
+
+	for _, dir := range dirs {
+		err := os.MkdirAll(dir, 0755)
+		assertNoError(t, err)
+		assertDirExists(t, dir)
+	}
+
+	// 在目录中创建一些 Go 文件，确保包名和内容格式正确
+	files := map[string]string{
+		filepath.Join(tmpDir, "src", "models", "user.go"): `// Package models contains data models
+package models
+
+// User represents a user in the system
+type User struct {
+	ID   int
+	Name string
+}`,
+		filepath.Join(tmpDir, "src", "handlers", "handler.go"): `// Package handlers contains HTTP handlers
+package handlers
+
+// Handler represents an HTTP handler
+type Handler struct {
+	Path string
+}`,
+		filepath.Join(tmpDir, "go.mod"): `module testproject
+
+go 1.16
+`,
+	}
+
+	for path, content := range files {
+		err := os.WriteFile(path, []byte(content), 0644)
+		assertNoError(t, err)
+		assertFileExists(t, path)
+	}
+
+	// 使用 Analyzer 分析项目，使用正确的相对路径
+	analyzer := NewAnalyzer(WithWorkDir(tmpDir))
+	result, err := analyzer.AnalyzeProject(context.Background(), "src")
+	assertNoError(t, err)
+
+	if result == nil {
+		t.Fatal("Expected analysis result, got nil")
+	}
+
+	// 验证是否找到了所有类型
+	foundTypes := make(map[string]bool)
+	for _, typ := range result.Types {
+		foundTypes[typ.Name] = true
+	}
+
+	expectedTypes := []string{"User", "Handler"}
+	for _, typeName := range expectedTypes {
+		if !foundTypes[typeName] {
+			t.Errorf("Expected to find type %s in analysis results", typeName)
+		}
+	}
+
+	// 验证包名，添加调试信息
+	packages := make(map[string]bool)
+	for _, typ := range result.Types {
+		t.Logf("Found type %s in package %s", typ.Name, typ.Package)
+		// 从完整包路径中提取最后一个部分作为包名
+		pkgParts := strings.Split(typ.Package, "/")
+		pkgName := pkgParts[len(pkgParts)-1]
+		packages[pkgName] = true
+	}
+
+	expectedPackages := []string{"models", "handlers"}
+	for _, pkgName := range expectedPackages {
+		if !packages[pkgName] {
+			t.Errorf("Expected to find package %s in analysis results", pkgName)
+		}
+	}
+}
+
 func TestAnalyzeFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupTestFiles(t, tmpDir)
