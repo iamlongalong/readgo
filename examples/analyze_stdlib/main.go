@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/iamlongalong/readgo"
@@ -31,7 +32,7 @@ func main() {
 	// Print interfaces
 	fmt.Println("Interfaces:")
 	for _, t := range result.Types {
-		if t.Type[:9] == "interface" {
+		if strings.Contains(t.Type, "interface") {
 			fmt.Printf("  - %s: %s\n", t.Name, t.Type)
 		}
 	}

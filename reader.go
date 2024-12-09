@@ -3,6 +3,9 @@ package readgo
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -231,11 +234,15 @@ func (r *DefaultReader) ReadFile(ctx context.Context, filePath string) ([]byte, 
 		return nil, err
 	}
 
-	if info.Size() > 10*1024*1024 { // 10MB
+	if info.Size() > 1*1024*1024 { // 1MB
 		return nil, fmt.Errorf("file too large: %s", filePath)
 	}
 
-	file, err := os.Open(absPath)
+	if !strings.HasPrefix(absPath, r.workDir) {
+		return nil, fmt.Errorf("path is outside of working directory: %s", absPath)
+	}
+
+	file, err := os.OpenFile(absPath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -358,4 +365,55 @@ func findNode(root *FileTreeNode, path string) *FileTreeNode {
 	}
 
 	return nil
+}
+
+// ReadFileWithFunctions reads a source file and returns its content along with function positions
+func (r *DefaultReader) ReadFileWithFunctions(ctx context.Context, path string) (*FileContent, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+
+	// Read file content
+	content, err := r.safeReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get absolute path for parsing
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(r.workDir, path)
+	}
+
+	// Parse the file to get function positions
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, absPath, content, parser.ParseComments)
+	if err != nil {
+		return nil, fmt.Errorf("parse file: %w", err)
+	}
+
+	// Extract function positions
+	var functions []FunctionPosition
+	ast.Inspect(file, func(n ast.Node) bool {
+		if fn, ok := n.(*ast.FuncDecl); ok {
+			pos := fset.Position(fn.Pos())
+			end := fset.Position(fn.End())
+			functions = append(functions, FunctionPosition{
+				Name:      fn.Name.Name,
+				StartLine: pos.Line,
+				EndLine:   end.Line,
+			})
+		}
+		return true
+	})
+
+	// Sort functions by start line
+	sort.Slice(functions, func(i, j int) bool {
+		return functions[i].StartLine < functions[j].StartLine
+	})
+
+	return &FileContent{
+		Content:   content,
+		Functions: functions,
+	}, nil
 }

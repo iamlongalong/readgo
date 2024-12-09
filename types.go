@@ -85,3 +85,16 @@ type ValidationResult struct {
 	Errors     []string            `json:"errors,omitempty"`
 	Warnings   []ValidationWarning `json:"warnings,omitempty"`
 }
+
+// FunctionPosition represents the position of a function in the source code
+type FunctionPosition struct {
+	Name      string `json:"name"`       // Function name
+	StartLine int    `json:"start_line"` // Starting line number
+	EndLine   int    `json:"end_line"`   // Ending line number
+}
+
+// FileContent represents the content of a file with function positions
+type FileContent struct {
+	Content   []byte             `json:"content"`   // File content
+	Functions []FunctionPosition `json:"functions"` // Function positions
+}

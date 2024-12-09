@@ -9,7 +9,6 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -138,21 +137,78 @@ func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error)
 		}
 	}
 
-	cfg := &packages.Config{
-		Mode: packages.NeedTypes |
-			packages.NeedSyntax |
-			packages.NeedTypesInfo |
-			packages.NeedImports |
-			packages.NeedDeps |
-			packages.NeedModule,
-		Dir: a.workDir,
+	// Handle relative paths
+	if strings.HasPrefix(pkgPath, "./") || strings.HasPrefix(pkgPath, "../") {
+		absPath := filepath.Clean(filepath.Join(a.workDir, pkgPath))
+		cfg := &packages.Config{
+			Mode: packages.NeedName |
+				packages.NeedFiles |
+				packages.NeedCompiledGoFiles |
+				packages.NeedImports |
+				packages.NeedTypes |
+				packages.NeedTypesSizes |
+				packages.NeedSyntax |
+				packages.NeedTypesInfo |
+				packages.NeedDeps,
+			Dir: absPath,
+			Env: append(os.Environ(), "GO111MODULE=on"),
+		}
+
+		// Load the package
+		pkgs, err := packages.Load(cfg, ".")
+		if err != nil {
+			return nil, &PackageError{
+				Package: pkgPath,
+				Op:      "load",
+				Wrapped: fmt.Errorf("load error: %w", err),
+			}
+		}
+
+		if len(pkgs) == 0 {
+			return nil, &PackageError{
+				Package: pkgPath,
+				Op:      "load",
+				Wrapped: fmt.Errorf("no packages found: %w", ErrNotFound),
+			}
+		}
+
+		// Print debug information
+		fmt.Printf("Loaded package: %s\n", pkgs[0].PkgPath)
+		fmt.Printf("Package name: %s\n", pkgs[0].Name)
+		fmt.Printf("Package files: %v\n", pkgs[0].GoFiles)
+		if len(pkgs[0].Errors) > 0 {
+			fmt.Printf("Package errors: %v\n", pkgs[0].Errors)
+		}
+
+		// Check for package errors
+		if len(pkgs[0].Errors) > 0 {
+			errors := make([]string, len(pkgs[0].Errors))
+			for i, err := range pkgs[0].Errors {
+				errors[i] = err.Error()
+			}
+			return nil, &PackageError{
+				Package: pkgPath,
+				Op:      "load",
+				Errors:  errors,
+			}
+		}
+
+		return pkgs[0], nil
 	}
 
-	// Handle different types of package paths
-	if pkgPath == "." {
-		pkgPath = "./..."
-	} else if !filepath.IsAbs(pkgPath) && !strings.Contains(pkgPath, "/") {
-		pkgPath = "./" + pkgPath
+	// For non-relative paths, use packages.Load
+	cfg := &packages.Config{
+		Mode: packages.NeedName |
+			packages.NeedFiles |
+			packages.NeedCompiledGoFiles |
+			packages.NeedImports |
+			packages.NeedTypes |
+			packages.NeedTypesSizes |
+			packages.NeedSyntax |
+			packages.NeedTypesInfo |
+			packages.NeedDeps,
+		Dir: a.workDir,
+		Env: append(os.Environ(), "GO111MODULE=on"),
 	}
 
 	pkgs, err := packages.Load(cfg, pkgPath)
@@ -160,7 +216,7 @@ func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error)
 		return nil, &PackageError{
 			Package: pkgPath,
 			Op:      "load",
-			Wrapped: err,
+			Wrapped: fmt.Errorf("load error: %w", err),
 		}
 	}
 
@@ -168,8 +224,12 @@ func (a *DefaultAnalyzer) loadPackage(pkgPath string) (*packages.Package, error)
 		return nil, &PackageError{
 			Package: pkgPath,
 			Op:      "load",
-			Wrapped: ErrNotFound,
+			Wrapped: fmt.Errorf("no packages found: %w", ErrNotFound),
 		}
+	}
+
+	if len(pkgs[0].Errors) > 0 {
+		fmt.Printf("Package errors: %v\n", pkgs[0].Errors)
 	}
 
 	// Check for package errors
@@ -491,70 +551,58 @@ func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*An
 }
 
 // AnalyzePackage analyzes a Go package
-// It supports analyzing both local and third-party packages
 func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error) {
-	if err := a.validatePath(pkgPath); err != nil {
-		return nil, fmt.Errorf("invalid package path: %w", err)
-	}
-
+	// Load the package
 	pkg, err := a.loadPackage(pkgPath)
 	if err != nil {
-		return nil, err
+		return nil, &AnalysisError{
+			Op:      "analyze package",
+			Path:    pkgPath,
+			Wrapped: fmt.Errorf("failed to load package: %w", err),
+		}
 	}
 
+	// Create result
 	result := &AnalysisResult{
 		Name:       pkg.Name,
-		Path:       pkgPath,
+		Path:       pkg.PkgPath,
 		StartTime:  time.Now().Format(time.RFC3339),
 		AnalyzedAt: time.Now(),
 	}
 
-	// First analyze the package's own scope
-	scope := pkg.Types.Scope()
-	for _, name := range scope.Names() {
-		obj := scope.Lookup(name)
-		switch obj := obj.(type) {
-		case *types.TypeName:
+	// Extract types
+	for _, obj := range pkg.TypesInfo.Defs {
+		if obj == nil {
+			continue
+		}
+
+		if named, ok := obj.Type().(*types.Named); ok {
 			result.Types = append(result.Types, TypeInfo{
 				Name:       obj.Name(),
-				Package:    pkgPath,
-				Type:       obj.Type().Underlying().String(),
-				IsExported: obj.Exported(),
-			})
-		case *types.Func:
-			result.Functions = append(result.Functions, FunctionInfo{
-				Name:       obj.Name(),
-				Package:    pkgPath,
+				Package:    pkg.PkgPath,
+				Type:       named.String(),
 				IsExported: obj.Exported(),
 			})
 		}
 	}
 
-	// Then analyze imports and their types
-	for importPath, imp := range pkg.Imports {
-		// Add import path
-		result.Imports = append(result.Imports, importPath)
-
-		// Add imported types and functions
-		scope := imp.Types.Scope()
-		for _, name := range scope.Names() {
-			obj := scope.Lookup(name)
-			switch obj := obj.(type) {
-			case *types.TypeName:
-				result.Types = append(result.Types, TypeInfo{
-					Name:       obj.Name(),
-					Package:    importPath,
-					Type:       obj.Type().Underlying().String(),
-					IsExported: obj.Exported(),
-				})
-			case *types.Func:
+	// Extract functions
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if funcDecl, ok := n.(*ast.FuncDecl); ok {
 				result.Functions = append(result.Functions, FunctionInfo{
-					Name:       obj.Name(),
-					Package:    importPath,
-					IsExported: obj.Exported(),
+					Name:       funcDecl.Name.Name,
+					Package:    pkg.PkgPath,
+					IsExported: funcDecl.Name.IsExported(),
 				})
 			}
-		}
+			return true
+		})
+	}
+
+	// Extract imports
+	for _, imp := range pkg.Imports {
+		result.Imports = append(result.Imports, imp.PkgPath)
 	}
 
 	return result, nil
@@ -562,58 +610,72 @@ func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (*
 
 // AnalyzeProject analyzes a Go project at the specified path
 func (a *DefaultAnalyzer) AnalyzeProject(ctx context.Context, projectPath string) (*AnalysisResult, error) {
-	if err := a.validatePath(projectPath); err != nil {
-		return nil, fmt.Errorf("invalid project path: %w", err)
+	if projectPath == "" {
+		projectPath = "."
 	}
 
-	// Load go.mod to get module information
-	modFile, err := a.loadGoMod()
+	// Convert to absolute path
+	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
-		return nil, fmt.Errorf("load go.mod: %w", err)
+		return nil, &AnalysisError{
+			Op:      "analyze project",
+			Path:    projectPath,
+			Wrapped: fmt.Errorf("failed to get absolute path: %w", err),
+		}
 	}
 
-	// Use module information for analysis
+	// Create result
 	result := &AnalysisResult{
-		Name:       modFile.Module.Mod.Path,
-		Path:       projectPath,
+		Name:       filepath.Base(absPath),
+		Path:       absPath,
 		StartTime:  time.Now().Format(time.RFC3339),
 		AnalyzedAt: time.Now(),
 	}
 
-	// Get all Go files in the project
-	files, err := a.reader.GetPackageFiles(ctx, ".", TreeOptions{FileTypes: FileTypeGo})
+	// Load the package
+	pkg, err := a.loadPackage(".")
 	if err != nil {
-		return nil, err
-	}
-
-	// Analyze each file
-	var types []TypeInfo
-	var functions []FunctionInfo
-	imports := make(map[string]struct{})
-
-	for _, file := range files {
-		result, err := a.AnalyzeFile(ctx, file.Path)
-		if err != nil {
-			return nil, err
-		}
-
-		types = append(types, result.Types...)
-		functions = append(functions, result.Functions...)
-		for _, imp := range result.Imports {
-			imports[imp] = struct{}{}
+		return nil, &AnalysisError{
+			Op:      "analyze project",
+			Path:    projectPath,
+			Wrapped: fmt.Errorf("failed to load package: %w", err),
 		}
 	}
 
-	// Convert imports map to slice
-	importsList := make([]string, 0, len(imports))
-	for imp := range imports {
-		importsList = append(importsList, imp)
-	}
-	sort.Strings(importsList)
+	// Extract types
+	for _, obj := range pkg.TypesInfo.Defs {
+		if obj == nil {
+			continue
+		}
 
-	result.Types = types
-	result.Functions = functions
-	result.Imports = importsList
+		if named, ok := obj.Type().(*types.Named); ok {
+			result.Types = append(result.Types, TypeInfo{
+				Name:       obj.Name(),
+				Package:    pkg.PkgPath,
+				Type:       named.String(),
+				IsExported: obj.Exported(),
+			})
+		}
+	}
+
+	// Extract functions
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if funcDecl, ok := n.(*ast.FuncDecl); ok {
+				result.Functions = append(result.Functions, FunctionInfo{
+					Name:       funcDecl.Name.Name,
+					Package:    pkg.PkgPath,
+					IsExported: funcDecl.Name.IsExported(),
+				})
+			}
+			return true
+		})
+	}
+
+	// Extract imports
+	for _, imp := range pkg.Imports {
+		result.Imports = append(result.Imports, imp.PkgPath)
+	}
 
 	return result, nil
 }

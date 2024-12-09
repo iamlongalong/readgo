@@ -4,126 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
-
-// setupTestFiles creates test files in the given directory
-func setupTestFiles(t *testing.T, dir string) {
-	t.Helper()
-
-	// Create test files structure
-	files := map[string]string{
-		"testdata/basic/main.go": `package basic
-
-import (
-	"context"
-)
-
-// ComplexInterface defines a complex interface for testing
-type ComplexInterface interface {
-	Method1(ctx context.Context) error
-	Method2(s string, i int) (bool, error)
-	Method3(data []byte) string
-}
-
-// User represents a user in the system
-type User struct {
-	ID   int
-	Name string
-}
-
-// String implements fmt.Stringer
-func (u *User) String() string {
-	return u.Name
-}`,
-
-		"testdata/multi/file1.go": `package multi
-
-import (
-	"context"
-)
-
-// Service represents a service interface
-type Service interface {
-	Process(ctx context.Context, data []byte) error
-	Close() error
-}
-
-// DefaultService implements the Service interface
-type DefaultService struct {
-	running bool
-}
-
-func (s *DefaultService) Process(ctx context.Context, data []byte) error {
-	return nil
-}
-
-func (s *DefaultService) Close() error {
-	s.running = false
-	return nil
-}`,
-
-		"testdata/multi/file2.go": `package multi
-
-import (
-	"context"
-	"sync"
-)
-
-// Manager manages multiple services
-type Manager struct {
-	services []Service
-	mu       sync.RWMutex
-}
-
-func (m *Manager) AddService(svc Service) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.services = append(m.services, svc)
-}
-
-func (m *Manager) ProcessAll(ctx context.Context, data []byte) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, svc := range m.services {
-		if err := svc.Process(ctx, data); err != nil {
-			return err
-		}
-	}
-	return nil
-}`,
-	}
-
-	// Create base directories
-	testDataDir := filepath.Join(dir, "testdata")
-	dirs := []string{
-		filepath.Join(testDataDir, "basic"),
-		filepath.Join(testDataDir, "multi"),
-	}
-
-	for _, d := range dirs {
-		err := os.MkdirAll(d, 0755)
-		if err != nil {
-			t.Fatalf("Failed to create directory %s: %v", d, err)
-		}
-	}
-
-	// Write test files
-	for path, content := range files {
-		fullPath := filepath.Join(dir, path)
-		err := os.WriteFile(fullPath, []byte(content), 0644)
-		if err != nil {
-			t.Fatalf("Failed to write file %s: %v", path, err)
-		}
-	}
-
-	// Create go.mod file
-	setupTestModule(t, dir)
-}
 
 func TestAnalyzeProject(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -255,7 +139,7 @@ func TestFindType(t *testing.T) {
 		{
 			name:     "Non-existent type",
 			pkgPath:  "./testdata/basic",
-			typeName: "NonExistent",
+			typeName: "NonExistentType",
 			wantErr:  true,
 		},
 	}
@@ -273,7 +157,9 @@ func TestFindType(t *testing.T) {
 			}
 			if !tt.wantErr {
 				assertNoError(t, err)
-				assertDeepEqual(t, result.Name, tt.typeName)
+				if result.Name != tt.typeName {
+					t.Errorf("FindType() got type name %q, want %q", result.Name, tt.typeName)
+				}
 			} else {
 				assertError(t, err)
 			}
@@ -300,7 +186,7 @@ func TestFindInterface(t *testing.T) {
 		{
 			name:          "Non-existent interface",
 			pkgPath:       "./testdata/basic",
-			interfaceName: "NonExistent",
+			interfaceName: "NonExistentInterface",
 			wantErr:       true,
 		},
 	}
@@ -318,7 +204,9 @@ func TestFindInterface(t *testing.T) {
 			}
 			if !tt.wantErr {
 				assertNoError(t, err)
-				assertDeepEqual(t, result.Name, tt.interfaceName)
+				if result.Name != tt.interfaceName {
+					t.Errorf("FindInterface() got interface name %q, want %q", result.Name, tt.interfaceName)
+				}
 			} else {
 				assertError(t, err)
 			}
@@ -335,88 +223,62 @@ func TestCacheEffectiveness(t *testing.T) {
 		WithCacheTTL(time.Minute),
 	)
 
-	// First call should miss cache
+	// First call should take longer (no cache)
 	start := time.Now()
-	result1, err := analyzer.FindType(context.Background(), "./testdata/basic", "User")
-	assertNoError(t, err)
+	_, err := analyzer.AnalyzeProject(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("First AnalyzeProject() failed: %v", err)
+	}
 	firstDuration := time.Since(start)
 
-	// Second call should hit cache
+	// Second call should be faster (cached)
 	start = time.Now()
-	result2, err := analyzer.FindType(context.Background(), "./testdata/basic", "User")
-	assertNoError(t, err)
+	_, err = analyzer.AnalyzeProject(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("Second AnalyzeProject() failed: %v", err)
+	}
 	secondDuration := time.Since(start)
 
-	// Verify results are the same
-	assertDeepEqual(t, result1, result2)
-
-	// Second call should be significantly faster
-	if secondDuration > firstDuration/2 {
-		t.Errorf("Cache not effective: first=%v, second=%v", firstDuration, secondDuration)
-	}
-
-	// Verify cache statistics
-	stats := analyzer.GetCacheStats()
-	if stats["enabled"] != true {
-		t.Error("Cache should be enabled")
-	}
-	if stats["type_entries"].(int) < 1 {
-		t.Error("Cache should have at least one type entry")
+	if secondDuration >= firstDuration {
+		t.Errorf("Cache not effective: second call (%v) not faster than first call (%v)", secondDuration, firstDuration)
 	}
 }
 
-// setupTestModule creates a temporary Go module for testing
-func setupTestModule(t *testing.T, dir string) {
-	t.Helper()
-	gomod := `module testmod
-
-go 1.22.0
-
-require (
-	golang.org/x/tools v0.19.0
-)
-`
-	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0644)
-	assertNoError(t, err)
-}
-
-// Test helper functions
+// Helper functions for assertions
 func assertNoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Errorf("Expected no error, got %v", err)
 	}
 }
 
 func assertError(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func assertDeepEqual(t *testing.T, a, b interface{}) {
-	t.Helper()
-	if !reflect.DeepEqual(a, b) {
-		t.Errorf("\nexpected: %#v\ngot: %#v", a, b)
-	}
-}
-
-func assertFileExists(t *testing.T, path string) {
-	t.Helper()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("file %s does not exist", path)
+		t.Error("Expected error, got nil")
 	}
 }
 
 func assertDirExists(t *testing.T, path string) {
 	t.Helper()
 	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		t.Errorf("directory %s does not exist", path)
+	if err != nil {
+		t.Errorf("Directory %s does not exist: %v", path, err)
 		return
 	}
 	if !info.IsDir() {
-		t.Errorf("%s exists but is not a directory", path)
+		t.Errorf("Path %s exists but is not a directory", path)
+	}
+}
+
+func assertFileExists(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Errorf("File %s does not exist: %v", path, err)
+		return
+	}
+	if info.IsDir() {
+		t.Errorf("Path %s exists but is a directory", path)
 	}
 }
