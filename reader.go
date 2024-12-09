@@ -57,6 +57,100 @@ func (r *DefaultReader) validatePath(path string) error {
 	return nil
 }
 
+// safeReadFile reads a file with security checks
+func (r *DefaultReader) safeReadFile(path string) ([]byte, error) {
+	if err := r.validatePath(path); err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Get absolute path
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(r.workDir, path)
+	}
+
+	// Clean the path
+	absPath = filepath.Clean(absPath)
+
+	// Verify file exists and get info
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if it's a regular file
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file: %s", path)
+	}
+
+	// Check file size
+	if info.Size() > maxFileSize {
+		return nil, fmt.Errorf("file too large: %s", path)
+	}
+
+	// Check file extension for allowed types
+	ext := strings.ToLower(filepath.Ext(path))
+	if !isAllowedExtension(ext) {
+		return nil, fmt.Errorf("unsupported file type: %s", ext)
+	}
+
+	// Read file with limited size
+	return os.ReadFile(absPath)
+}
+
+// safeOpenFile opens a file with security checks
+func (r *DefaultReader) safeOpenFile(path string) (*os.File, error) {
+	if err := r.validatePath(path); err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Get absolute path
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(r.workDir, path)
+	}
+
+	// Clean the path
+	absPath = filepath.Clean(absPath)
+
+	// Verify file exists and get info
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if it's a regular file
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file: %s", path)
+	}
+
+	// Check file size
+	if info.Size() > maxFileSize {
+		return nil, fmt.Errorf("file too large: %s", path)
+	}
+
+	// Check file extension for allowed types
+	ext := strings.ToLower(filepath.Ext(path))
+	if !isAllowedExtension(ext) {
+		return nil, fmt.Errorf("unsupported file type: %s", ext)
+	}
+
+	// Open file with read-only mode
+	return os.OpenFile(absPath, os.O_RDONLY, 0)
+}
+
+const maxFileSize = 10 * 1024 * 1024 // 10MB
+
+// isAllowedExtension checks if the file extension is allowed
+func isAllowedExtension(ext string) bool {
+	allowedExts := map[string]bool{
+		".go":  true,
+		".mod": true,
+		".sum": true,
+	}
+	return allowedExts[ext]
+}
+
 // GetFileTree returns the file tree starting from the given root
 func (r *DefaultReader) GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error) {
 	if err := r.validatePath(root); err != nil {
@@ -265,29 +359,12 @@ func (r *DefaultReader) SearchFiles(ctx context.Context, pattern string, opts Tr
 
 // ReadSourceFile reads a source file with the specified options
 func (r *DefaultReader) ReadSourceFile(ctx context.Context, path string, opts ReadOptions) ([]byte, error) {
-	if err := r.validatePath(path); err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
-	}
-
-	absPath := path
-	if !filepath.IsAbs(path) {
-		absPath = filepath.Join(r.workDir, path)
-	}
-
-	info, err := os.Stat(absPath)
+	content, err := r.safeReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	if info.IsDir() {
-		return nil, fmt.Errorf("path is a directory: %s", path)
-	}
-
-	content, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, err
-	}
-
+	// Process content based on options
 	if opts.StripSpaces {
 		lines := strings.Split(string(content), "\n")
 		for i, line := range lines {

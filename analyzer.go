@@ -70,15 +70,64 @@ func (a *DefaultAnalyzer) validatePath(path string) error {
 	return nil
 }
 
+// safeReadFile reads a file with security checks
+func (a *DefaultAnalyzer) safeReadFile(path string) ([]byte, error) {
+	if err := a.validatePath(path); err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Get absolute path
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(a.opts.WorkDir, path)
+	}
+
+	// Clean the path
+	absPath = filepath.Clean(absPath)
+
+	// Verify file exists and get info
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if it's a regular file
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file: %s", path)
+	}
+
+	// Check file size
+	if info.Size() > maxFileSize {
+		return nil, fmt.Errorf("file too large: %s", path)
+	}
+
+	// Check file extension for allowed types
+	ext := strings.ToLower(filepath.Ext(path))
+	if !isAllowedExtension(ext) {
+		return nil, fmt.Errorf("unsupported file type: %s", ext)
+	}
+
+	// Read file with limited size
+	return os.ReadFile(absPath)
+}
+
+const maxFileSize = 10 * 1024 * 1024 // 10MB
+
+// isAllowedExtension checks if the file extension is allowed
+func isAllowedExtension(ext string) bool {
+	allowedExts := map[string]bool{
+		".go":  true,
+		".mod": true,
+		".sum": true,
+	}
+	return allowedExts[ext]
+}
+
 // loadGoMod loads and parses the go.mod file
 func (a *DefaultAnalyzer) loadGoMod() (*modfile.File, error) {
 	goModPath := filepath.Join(a.opts.WorkDir, "go.mod")
 
-	if err := a.validatePath(goModPath); err != nil {
-		return nil, fmt.Errorf("invalid go.mod path: %w", err)
-	}
-
-	content, err := os.ReadFile(goModPath)
+	content, err := a.safeReadFile(goModPath)
 	if err != nil {
 		return nil, fmt.Errorf("read go.mod: %w", err)
 	}
