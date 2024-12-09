@@ -124,7 +124,7 @@ func (m *Manager) ProcessAll(data []byte) error {
 	}
 
 	for _, d := range dirs {
-		err := os.MkdirAll(d, 0755)
+		err := os.MkdirAll(d, 0750)
 		if err != nil {
 			t.Fatalf("Failed to create directory %s: %v", d, err)
 		}
@@ -133,7 +133,7 @@ func (m *Manager) ProcessAll(data []byte) error {
 	// Write test files
 	for path, content := range files {
 		fullPath := filepath.Join(dir, path)
-		err := os.WriteFile(fullPath, []byte(content), 0644)
+		err := os.WriteFile(fullPath, []byte(content), 0600)
 		if err != nil {
 			t.Fatalf("Failed to write file %s: %v", path, err)
 		}
@@ -155,7 +155,7 @@ require (
 	golang.org/x/tools v0.1.1
 )
 `
-	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0644)
+	err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write go.mod: %v", err)
 	}

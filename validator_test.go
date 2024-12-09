@@ -35,7 +35,7 @@ func main() {
 
 	for name, content := range testFiles {
 		path := filepath.Join(tmpDir, name)
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 	}
@@ -118,7 +118,7 @@ type User struct {
 
 	for name, content := range testFiles {
 		path := filepath.Join(pkgPath, name)
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 	}
@@ -194,7 +194,7 @@ type User struct {
 
 	for path, content := range testFiles {
 		fullPath := filepath.Join(tmpDir, path)
-		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(fullPath, []byte(content), 0600); err != nil {
 			t.Fatalf("Failed to write test file: %v", err)
 		}
 	}

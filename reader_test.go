@@ -7,63 +7,59 @@ import (
 )
 
 func TestGetFileTree(t *testing.T) {
-	tmpDir := t.TempDir()
-	setupTestFiles(t, tmpDir)
-
 	tests := []struct {
-		name     string
-		opts     TreeOptions
-		wantType FileType
+		name    string
+		root    string
+		opts    TreeOptions
+		wantErr bool
+		check   func(*testing.T, *FileTreeNode)
 	}{
 		{
-			name: "All files",
+			name: "Only Go files",
+			root: ".",
 			opts: TreeOptions{
-				FileTypes: FileTypeAll,
+				IncludePatterns: []string{"*.go"},
 			},
-			wantType: FileTypeAll,
+			wantErr: false,
+			check: func(t *testing.T, tree *FileTreeNode) {
+				var files []string
+				var collect func(*FileTreeNode)
+				collect = func(node *FileTreeNode) {
+					if node.Type == "file" {
+						files = append(files, node.Name)
+					}
+					for _, child := range node.Children {
+						collect(child)
+					}
+				}
+				collect(tree)
+
+				for _, file := range files {
+					if !strings.HasSuffix(file, ".go") {
+						t.Errorf("Found non-Go file: %s", file)
+					}
+				}
+			},
 		},
 		{
-			name: "Only Go files",
-			opts: TreeOptions{
-				FileTypes: FileTypeGo,
-			},
-			wantType: FileTypeGo,
+			name:    "Non-existent directory",
+			root:    "nonexistent",
+			opts:    TreeOptions{},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := NewDefaultReader().WithWorkDir(tmpDir)
-			tree, err := reader.GetFileTree(context.Background(), ".", tt.opts)
-			if err != nil {
-				t.Fatalf("GetFileTree() error = %v", err)
+			reader := NewDefaultReader().WithWorkDir("testdata/basic")
+			tree, err := reader.GetFileTree(context.Background(), tt.root, tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetFileTree() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
-
-			// Verify tree structure
-			if tree == nil {
-				t.Fatal("GetFileTree() returned nil tree")
+			if !tt.wantErr && tt.check != nil {
+				tt.check(t, tree)
 			}
-			if tree.Type != "directory" {
-				t.Errorf("Root node type = %v, want directory", tree.Type)
-			}
-
-			// Check file types based on options
-			var checkFiles func(*FileTreeNode)
-			checkFiles = func(node *FileTreeNode) {
-				for _, child := range node.Children {
-					if child.Type == "file" {
-						switch tt.wantType {
-						case FileTypeGo:
-							if !strings.HasSuffix(child.Name, ".go") {
-								t.Errorf("Found non-Go file: %s", child.Path)
-							}
-						}
-					} else {
-						checkFiles(child)
-					}
-				}
-			}
-			checkFiles(tree)
 		})
 	}
 }
