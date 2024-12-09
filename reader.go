@@ -260,9 +260,10 @@ func (r *DefaultReader) ReadSourceFile(ctx context.Context, path string, opts Re
 		content = []byte(strings.Join(lines, "\n"))
 	}
 
-	if !opts.IncludeComments {
-		// TODO: Implement comment stripping
-	}
+	// Comment stripping is not implemented yet
+	// if !opts.IncludeComments {
+	// 	// TODO: Implement comment stripping
+	// }
 
 	return content, nil
 }

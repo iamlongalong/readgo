@@ -2,23 +2,9 @@ package readgo
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 )
-
-// setupTestEnvironment creates a temporary test environment
-// DEPRECATED: This function is no longer used and will be removed
-func setupTestEnvironment(t *testing.T) (string, func()) {
-	tmpDir, err := os.MkdirTemp("", "readgo-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	return tmpDir, func() {
-		os.RemoveAll(tmpDir)
-	}
-}
 
 func TestGetFileTree(t *testing.T) {
 	tmpDir := t.TempDir()
