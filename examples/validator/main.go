@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/iamlongalong/readgo"
 )
@@ -37,9 +38,10 @@ func InvalidFunction() {
 }`,
 	}
 
-	// Write test files
+	// Write test files with secure permissions
 	for name, content := range files {
-		if err := os.WriteFile(tmpDir+"/"+name, []byte(content), 0644); err != nil {
+		filePath := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
 			log.Fatalf("Failed to write file %s: %v", name, err)
 		}
 	}

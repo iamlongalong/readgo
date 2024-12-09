@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -39,6 +40,64 @@ func NewAnalyzer(opts ...Option) *DefaultAnalyzer {
 		reader:  reader,
 		opts:    options,
 	}
+}
+
+// validatePath checks if the path is safe to access
+func (a *DefaultAnalyzer) validatePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+
+	// Convert to absolute path
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(a.opts.WorkDir, path)
+	}
+
+	// Clean the path
+	absPath = filepath.Clean(absPath)
+
+	// Check if the path is within workDir
+	workDirAbs, err := filepath.Abs(a.opts.WorkDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	if !strings.HasPrefix(absPath, workDirAbs) {
+		return fmt.Errorf("path is outside of working directory")
+	}
+
+	return nil
+}
+
+// loadGoMod loads and parses the go.mod file
+func (a *DefaultAnalyzer) loadGoMod() (*modfile.File, error) {
+	goModPath := filepath.Join(a.opts.WorkDir, "go.mod")
+
+	if err := a.validatePath(goModPath); err != nil {
+		return nil, fmt.Errorf("invalid go.mod path: %w", err)
+	}
+
+	content, err := os.ReadFile(goModPath)
+	if err != nil {
+		return nil, fmt.Errorf("read go.mod: %w", err)
+	}
+
+	// Extract module name from go.mod
+	var moduleName string
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "module ") {
+			moduleName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "module "))
+			break
+		}
+	}
+
+	if moduleName == "" {
+		return nil, &AnalysisError{Op: "parse go.mod", Path: goModPath, Wrapped: fmt.Errorf("module name not found")}
+	}
+
+	return nil, nil
 }
 
 // loadPackage loads a package with basic configuration

@@ -29,8 +29,40 @@ func (r *DefaultReader) WithWorkDir(dir string) *DefaultReader {
 	return r
 }
 
+// validatePath checks if the path is safe to access
+func (r *DefaultReader) validatePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+
+	// Convert to absolute path
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(r.workDir, path)
+	}
+
+	// Clean the path
+	absPath = filepath.Clean(absPath)
+
+	// Check if the path is within workDir
+	workDirAbs, err := filepath.Abs(r.workDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	if !strings.HasPrefix(absPath, workDirAbs) {
+		return fmt.Errorf("path is outside of working directory")
+	}
+
+	return nil
+}
+
 // GetFileTree returns the file tree starting from the given root
 func (r *DefaultReader) GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error) {
+	if err := r.validatePath(root); err != nil {
+		return nil, fmt.Errorf("invalid root path: %w", err)
+	}
+
 	if root == "" {
 		root = "."
 	}
@@ -233,11 +265,15 @@ func (r *DefaultReader) SearchFiles(ctx context.Context, pattern string, opts Tr
 
 // ReadSourceFile reads a source file with the specified options
 func (r *DefaultReader) ReadSourceFile(ctx context.Context, path string, opts ReadOptions) ([]byte, error) {
-	if path == "" {
-		return nil, ErrInvalidInput
+	if err := r.validatePath(path); err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
 	}
 
-	absPath := filepath.Join(r.workDir, path)
+	absPath := path
+	if !filepath.IsAbs(path) {
+		absPath = filepath.Join(r.workDir, path)
+	}
+
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return nil, err
