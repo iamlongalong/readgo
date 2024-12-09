@@ -139,18 +139,6 @@ func (r *DefaultReader) safeOpenFile(path string) (*os.File, error) {
 	return os.OpenFile(absPath, os.O_RDONLY, 0)
 }
 
-const maxFileSize = 10 * 1024 * 1024 // 10MB
-
-// isAllowedExtension checks if the file extension is allowed
-func isAllowedExtension(ext string) bool {
-	allowedExts := map[string]bool{
-		".go":  true,
-		".mod": true,
-		".sum": true,
-	}
-	return allowedExts[ext]
-}
-
 // GetFileTree returns the file tree starting from the given root
 func (r *DefaultReader) GetFileTree(ctx context.Context, root string, opts TreeOptions) (*FileTreeNode, error) {
 	if err := r.validatePath(root); err != nil {

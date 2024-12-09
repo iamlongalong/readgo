@@ -8,3 +8,4 @@
 *.log
 
 __debug_bin*
+coverage.txt
