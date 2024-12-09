@@ -83,21 +83,12 @@ func (a *DefaultAnalyzer) loadGoMod() (*modfile.File, error) {
 		return nil, fmt.Errorf("read go.mod: %w", err)
 	}
 
-	// Extract module name from go.mod
-	var moduleName string
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "module ") {
-			moduleName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "module "))
-			break
-		}
+	modFile, err := modfile.Parse("go.mod", content, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parse go.mod: %w", err)
 	}
 
-	if moduleName == "" {
-		return nil, &AnalysisError{Op: "parse go.mod", Path: goModPath, Wrapped: fmt.Errorf("module name not found")}
-	}
-
-	return nil, nil
+	return modFile, nil
 }
 
 // loadPackage loads a package with basic configuration
@@ -368,8 +359,8 @@ func (a *DefaultAnalyzer) FindFunction(ctx context.Context, pkgPath, funcName st
 
 // AnalyzeFile analyzes a specific Go source file
 func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*AnalysisResult, error) {
-	if filePath == "" {
-		return nil, ErrInvalidInput
+	if err := a.validatePath(filePath); err != nil {
+		return nil, fmt.Errorf("invalid file path: %w", err)
 	}
 
 	// Read file content
@@ -464,20 +455,9 @@ func (a *DefaultAnalyzer) AnalyzeFile(ctx context.Context, filePath string) (*An
 
 // AnalyzePackage analyzes a Go package
 // It supports analyzing both local and third-party packages
-func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (result *AnalysisResult, err error) {
-	if a.cache != nil {
-		key := PackageCacheKey{
-			Path: pkgPath,
-			Mode: "full",
-		}
-		if cached, ok := a.cache.GetPackage(key); ok {
-			return cached, nil
-		}
-		defer func() {
-			if err == nil && result != nil {
-				a.cache.SetPackage(key, result)
-			}
-		}()
+func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (*AnalysisResult, error) {
+	if err := a.validatePath(pkgPath); err != nil {
+		return nil, fmt.Errorf("invalid package path: %w", err)
 	}
 
 	pkg, err := a.loadPackage(pkgPath)
@@ -485,7 +465,7 @@ func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (r
 		return nil, err
 	}
 
-	result = &AnalysisResult{
+	result := &AnalysisResult{
 		Name:       pkg.Name,
 		Path:       pkgPath,
 		StartTime:  time.Now().Format(time.RFC3339),
@@ -545,29 +525,22 @@ func (a *DefaultAnalyzer) AnalyzePackage(ctx context.Context, pkgPath string) (r
 
 // AnalyzeProject analyzes a Go project at the specified path
 func (a *DefaultAnalyzer) AnalyzeProject(ctx context.Context, projectPath string) (*AnalysisResult, error) {
-	if projectPath == "" {
-		return nil, ErrInvalidInput
+	if err := a.validatePath(projectPath); err != nil {
+		return nil, fmt.Errorf("invalid project path: %w", err)
 	}
 
-	// Read go.mod to get project name
-	goModPath := filepath.Join(a.workDir, "go.mod")
-	content, err := os.ReadFile(goModPath)
+	// Load go.mod to get module information
+	modFile, err := a.loadGoMod()
 	if err != nil {
-		return nil, &AnalysisError{Op: "read go.mod", Path: goModPath, Wrapped: err}
+		return nil, fmt.Errorf("load go.mod: %w", err)
 	}
 
-	// Extract module name from go.mod
-	var moduleName string
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "module ") {
-			moduleName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "module "))
-			break
-		}
-	}
-
-	if moduleName == "" {
-		return nil, &AnalysisError{Op: "parse go.mod", Path: goModPath, Wrapped: fmt.Errorf("module name not found")}
+	// Use module information for analysis
+	result := &AnalysisResult{
+		Name:       modFile.Module.Mod.Path,
+		Path:       projectPath,
+		StartTime:  time.Now().Format(time.RFC3339),
+		AnalyzedAt: time.Now(),
 	}
 
 	// Get all Go files in the project
@@ -601,15 +574,11 @@ func (a *DefaultAnalyzer) AnalyzeProject(ctx context.Context, projectPath string
 	}
 	sort.Strings(importsList)
 
-	return &AnalysisResult{
-		Name:       moduleName,
-		Path:       a.workDir,
-		StartTime:  time.Now().Format(time.RFC3339),
-		AnalyzedAt: time.Now(),
-		Types:      types,
-		Functions:  functions,
-		Imports:    importsList,
-	}, nil
+	result.Types = types
+	result.Functions = functions
+	result.Imports = importsList
+
+	return result, nil
 }
 
 // GetCacheStats returns cache statistics if caching is enabled
